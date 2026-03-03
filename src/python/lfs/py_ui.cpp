@@ -3429,7 +3429,8 @@ namespace lfs::python {
                                  {0, 0}, {u1, v1}, t, {0, 0, 0, 0});
                 },
                 nb::arg("texture"), nb::arg("size"), nb::arg("tint") = nb::none(), "Draw a DynamicTexture with automatic UV scaling")
-            .def("image_tensor", [](PyUILayout& /*self*/, const std::string& label, PyTensor& tensor, std::tuple<float, float> size, nb::object tint) {
+            .def(
+                "image_tensor", [](PyUILayout& /*self*/, const std::string& label, PyTensor& tensor, std::tuple<float, float> size, nb::object tint) {
                     PyDynamicTexture* tex_ptr = nullptr;
                     {
                         std::lock_guard lock(g_dynamic_textures_mutex);
@@ -4507,6 +4508,24 @@ namespace lfs::python {
             "get_theme",
             []() -> std::string { return vis::theme().name; },
             "Get current theme name (e.g. 'Dark', 'Light', 'Gruvbox', 'Catppuccin Mocha', 'Catppuccin Latte', or 'Nord')");
+
+        m.def(
+            "set_ui_scale",
+            [](float scale) {
+                vis::saveUiScalePreference(scale);
+                core::events::internal::UiScaleChangeRequested{scale}.emit();
+            },
+            nb::arg("scale"), "Set UI scale (0.0 = auto from OS, or 1.0-4.0)");
+
+        m.def(
+            "get_ui_scale",
+            []() -> float { return python::get_shared_dpi_scale(); },
+            "Get current UI scale factor");
+
+        m.def(
+            "get_ui_scale_preference",
+            []() -> float { return vis::loadUiScalePreference(); },
+            "Get saved UI scale preference (0.0 = auto)");
 
         // Language control (for Python-driven Edit menu)
         m.def(

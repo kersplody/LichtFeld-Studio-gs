@@ -164,10 +164,14 @@ namespace lfs::vis {
         float last_ruler_pan_ = -1.0f;
         float last_ruler_width_ = -1.0f;
 
+        float timelineWidth() const;
+
         // Layout cache for interaction
         float cached_panel_x_ = 0.0f;
         float cached_panel_y_ = 0.0f;
         float cached_panel_width_ = 0.0f;
+        float cached_dp_ratio_ = 1.0f;
+        float cached_height_ = panel_config::HEIGHT;
 
         gui::RmlFBO fbo_;
 
