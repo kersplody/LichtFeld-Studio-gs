@@ -15,6 +15,12 @@ body {
     box-sizing: border-box;
 }
 
+#header {
+    display: block;
+    width: 100%;
+    height: 56dp;
+}
+
 #transport {
     display: inline-block;
     width: 176dp;
@@ -172,22 +178,20 @@ body {
 #playhead-handle {
     display: block;
     position: absolute;
-    top: -12dp;
-    left: -5dp;
-    width: 10dp;
-    height: 10dp;
-    background-color: #ff4444;
-    border-radius: 2dp;
-    transform: rotate(45deg);
+    top: -10dp;
+    left: -4dp;
+    width: 8dp;
+    height: 12dp;
+    background-color: #ff6688;
+    border-radius: 4dp;
 }
 
-#playhead-line {
+#easing-stripe {
     display: block;
-    position: absolute;
-    top: -6dp;
-    left: -1dp;
-    width: 2dp;
-    height: 40dp;
+    width: 100%;
+    height: 36dp;
+    box-sizing: border-box;
+    border-top: 1dp rgba(160, 160, 180, 40);
 }
 
 #time-display {

@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include "gui/film_strip_renderer.hpp"
 #include "gui/gl_line_renderer.hpp"
 #include "gui/keyframe_scene_sync.hpp"
 #include "gui/panel_layout.hpp"
@@ -48,6 +49,9 @@ namespace lfs::vis {
             void renderKeyframeGizmo(const UIContext& ctx, const ViewportLayout& viewport);
             void handleOverlayActions();
             void renderKeyframeEditOverlay(const ViewportLayout& viewport);
+            void renderFilmStrip(const UIContext& ctx);
+            void drawPlayheadLine();
+            void drawEasingCurves();
             void initPipPreview();
             void renderKeyframePreview(const UIContext& ctx);
             void drawPipPreviewWindow(const ViewportLayout& viewport);
@@ -59,6 +63,7 @@ namespace lfs::vis {
             std::unique_ptr<gui::RmlSequencerOverlay> overlay_;
             std::unique_ptr<KeyframeSceneSync> scene_sync_;
             GLLineRenderer line_renderer_;
+            FilmStripRenderer film_strip_;
 
             ImGuizmo::OPERATION keyframe_gizmo_op_ = ImGuizmo::OPERATION(0);
             bool keyframe_gizmo_active_ = false;
@@ -79,6 +84,16 @@ namespace lfs::vis {
             std::optional<size_t> pip_last_keyframe_;
             bool pip_needs_update_ = true;
             std::chrono::steady_clock::time_point pip_last_render_time_ = std::chrono::steady_clock::now();
+
+            struct TimelineGeometry {
+                float timeline_x = 0.0f;
+                float timeline_width = 0.0f;
+                float panel_x = 0.0f;
+                float panel_width = 0.0f;
+                float panel_y = 0.0f;
+                float dp = 1.0f;
+            };
+            TimelineGeometry tl_geo_;
         };
 
     } // namespace gui

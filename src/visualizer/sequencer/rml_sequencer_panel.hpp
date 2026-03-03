@@ -55,6 +55,8 @@ namespace lfs::vis {
         inline constexpr float MIN_ZOOM = 0.5f;
         inline constexpr float MAX_ZOOM = 4.0f;
         inline constexpr float ZOOM_SPEED = 0.1f;
+        inline constexpr float EASING_STRIPE_HEIGHT = 36.0f;
+        inline constexpr float BORDER_OVERLAP = 1.0f;
     } // namespace panel_config
 
     struct TimelineContextMenuState {
@@ -88,10 +90,21 @@ namespace lfs::vis {
 
         void setSnapEnabled(bool enabled) { snap_enabled_ = enabled; }
         void setSnapInterval(float interval) { snap_interval_ = interval; }
+        void setFilmStripAttached(bool attached) { film_strip_attached_ = attached; }
 
         void openFocalLengthEdit(size_t index, float current_focal_mm);
 
         [[nodiscard]] bool isHovered() const { return hovered_; }
+
+        [[nodiscard]] float zoomLevel() const { return zoom_level_; }
+        [[nodiscard]] float panOffset() const { return pan_offset_; }
+        [[nodiscard]] float cachedPanelX() const { return cached_panel_x_; }
+        [[nodiscard]] float cachedPanelY() const { return cached_panel_y_; }
+        [[nodiscard]] float cachedPanelWidth() const { return cached_panel_width_; }
+        [[nodiscard]] float cachedDpRatio() const { return cached_dp_ratio_; }
+        [[nodiscard]] float cachedPlayheadScreenX() const { return cached_playhead_screen_x_; }
+        [[nodiscard]] bool isPlayheadInRange() const { return playhead_in_range_; }
+        [[nodiscard]] float getDisplayEndTime() const;
 
         [[nodiscard]] TimelineContextMenuState consumeContextMenu();
         [[nodiscard]] TimeEditRequest consumeTimeEditRequest();
@@ -120,7 +133,6 @@ namespace lfs::vis {
         void handleTimelineInteraction(const Vec2& pos, float width, float height,
                                        const PanelInputState& input);
 
-        [[nodiscard]] float getDisplayEndTime() const;
         [[nodiscard]] float timeToX(float time, float timeline_x, float timeline_width) const;
         [[nodiscard]] float xToTime(float x, float timeline_x, float timeline_width) const;
         [[nodiscard]] float snapTime(float time) const;
@@ -170,6 +182,8 @@ namespace lfs::vis {
         float cached_panel_x_ = 0.0f;
         float cached_panel_y_ = 0.0f;
         float cached_panel_width_ = 0.0f;
+        float cached_playhead_screen_x_ = 0.0f;
+        bool playhead_in_range_ = false;
         float cached_dp_ratio_ = 1.0f;
         float cached_height_ = panel_config::HEIGHT;
 
@@ -189,6 +203,8 @@ namespace lfs::vis {
 
         bool snap_enabled_ = false;
         float snap_interval_ = 0.5f;
+        bool film_strip_attached_ = false;
+        bool last_film_strip_attached_ = false;
 
         // Time editing
         bool editing_keyframe_time_ = false;

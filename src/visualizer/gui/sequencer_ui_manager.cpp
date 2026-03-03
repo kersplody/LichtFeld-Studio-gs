@@ -16,6 +16,7 @@
 #include "rendering/rendering.hpp"
 #include "rendering/rendering_manager.hpp"
 #include "scene/scene_manager.hpp"
+#include "sequencer/interpolation.hpp"
 #include "sequencer/keyframe.hpp"
 #include "theme/theme.hpp"
 #include "visualizer_impl.hpp"
@@ -45,6 +46,7 @@ namespace lfs::vis::gui {
         pip_depth_rbo_ = {};
         pip_initialized_ = false;
         line_renderer_.destroyGLResources();
+        film_strip_.destroyGLResources();
         if (panel_)
             panel_->destroyGLResources();
         if (overlay_)
@@ -91,6 +93,10 @@ namespace lfs::vis::gui {
             controller_.togglePlayPause();
         });
 
+        state::KeyframeListChanged::when([this](const auto&) {
+            film_strip_.invalidateAll();
+        });
+
         scene_sync_->setupEvents();
     }
 
@@ -101,6 +107,18 @@ namespace lfs::vis::gui {
             renderKeyframePreview(ctx);
         }
         renderSequencerPanel(ctx, viewport);
+        {
+            const float dp = panel_->cachedDpRatio();
+            const float px = panel_->cachedPanelX();
+            const float pw = panel_->cachedPanelWidth();
+            tl_geo_ = {
+                px + (panel_config::TRANSPORT_WIDTH + panel_config::INNER_PADDING) * dp,
+                pw - (panel_config::TRANSPORT_WIDTH + panel_config::TIME_DISPLAY_WIDTH + panel_config::INNER_PADDING * 2.0f) * dp,
+                px, pw, panel_->cachedPanelY(), dp};
+        }
+        renderFilmStrip(ctx);
+        drawEasingCurves();
+        drawPlayheadLine();
         drawPipPreviewWindow(viewport);
         renderKeyframeEditOverlay(viewport);
         handleOverlayActions();
@@ -143,6 +161,7 @@ namespace lfs::vis::gui {
 
         panel_->setSnapEnabled(ui_state_.snap_to_grid);
         panel_->setSnapInterval(ui_state_.snap_interval);
+        panel_->setFilmStripAttached(ui_state_.show_film_strip);
 
         lfs::vis::PanelInputState input;
         input.mouse_x = io.MousePos.x;
@@ -163,7 +182,9 @@ namespace lfs::vis::gui {
         input.screen_w = static_cast<int>(io.DisplaySize.x);
         input.screen_h = static_cast<int>(io.DisplaySize.y);
 
-        panel_->render(viewport.pos.x, viewport.size.x, viewport.pos.y + viewport.size.y, input);
+        const float strip_offset = ui_state_.show_film_strip ? FilmStripRenderer::STRIP_HEIGHT : 0.0f;
+        panel_->render(viewport.pos.x, viewport.size.x,
+                       viewport.pos.y + viewport.size.y - strip_offset, input);
 
         if (panel_->isHovered())
             ImGui::GetIO().WantCaptureMouse = true;
@@ -371,11 +392,6 @@ namespace lfs::vis::gui {
                     last_frustum_clicked_ = *hovered_keyframe;
                 }
             }
-            if (ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
-                const ImVec2 mouse_pos = ImGui::GetMousePos();
-                overlay_->showContextMenu(mouse_pos.x, mouse_pos.y,
-                                          hovered_keyframe, keyframe_gizmo_op_);
-            }
         }
     }
 
@@ -527,6 +543,214 @@ namespace lfs::vis::gui {
         }
     }
 
+    void SequencerUIManager::renderFilmStrip(const UIContext& ctx) {
+        if (!ui_state_.show_film_strip)
+            return;
+
+        auto* const rm = ctx.viewer->getRenderingManager();
+        auto* const sm = ctx.viewer->getSceneManager();
+
+        const float timeline_x = tl_geo_.timeline_x;
+        const float timeline_width = tl_geo_.timeline_width;
+        const float px = tl_geo_.panel_x;
+        const float pw = tl_geo_.panel_width;
+
+        if (timeline_width <= 0.0f)
+            return;
+
+        const float strip_y = tl_geo_.panel_y + (panel_config::HEIGHT + panel_config::EASING_STRIPE_HEIGHT - panel_config::BORDER_OVERLAP) * tl_geo_.dp;
+
+        film_strip_.render(controller_, rm, sm,
+                           px, pw,
+                           timeline_x, timeline_width,
+                           strip_y,
+                           panel_->zoomLevel(), panel_->panOffset(),
+                           panel_->getDisplayEndTime());
+
+        const auto& io = ImGui::GetIO();
+        const float mx = io.MousePos.x;
+        const float my = io.MousePos.y;
+        if (mx >= px && mx < px + pw && my >= strip_y && my < strip_y + FilmStripRenderer::STRIP_HEIGHT)
+            ImGui::GetIO().WantCaptureMouse = true;
+    }
+
+    void SequencerUIManager::drawEasingCurves() {
+        const float dp = tl_geo_.dp;
+        const float px = tl_geo_.panel_x;
+        const float pw = tl_geo_.panel_width;
+        const float panel_y = tl_geo_.panel_y;
+        const float timeline_x = tl_geo_.timeline_x;
+        const float timeline_width = tl_geo_.timeline_width;
+        if (timeline_width <= 0.0f)
+            return;
+
+        const float stripe_y = panel_y + panel_config::HEIGHT * dp;
+        const float stripe_h = panel_config::EASING_STRIPE_HEIGHT * dp;
+        const float y_center = stripe_y + stripe_h * 0.5f;
+
+        auto* dl = ImGui::GetForegroundDrawList();
+
+        const auto& t = theme();
+        dl->AddRectFilled({px, stripe_y}, {px + pw, stripe_y + stripe_h},
+                          toU32WithAlpha(t.palette.surface, 0.85f),
+                          0.0f);
+        dl->AddLine({px, stripe_y}, {px + pw, stripe_y},
+                    toU32WithAlpha(t.palette.border, 0.3f));
+
+        const auto& timeline = controller_.timeline();
+        const auto& keyframes = timeline.keyframes();
+        if (keyframes.size() < 2)
+            return;
+
+        constexpr int CURVE_SAMPLES = 20;
+        constexpr float CURVE_THICKNESS = 1.5f;
+        constexpr float DOT_RADIUS = 3.0f;
+        constexpr float INDICATOR_SIZE = 4.0f;
+
+        const float zoom = panel_->zoomLevel();
+        const float pan = panel_->panOffset();
+        const float display_end = panel_->getDisplayEndTime();
+        const float amplitude = stripe_h * 0.35f;
+
+        const auto localTimeToX = [&](float time) -> float {
+            const float adjusted = (time - pan) * zoom;
+            return timeline_x + (adjusted / (display_end * zoom)) * timeline_width;
+        };
+
+        dl->PushClipRect({timeline_x, stripe_y}, {timeline_x + timeline_width, stripe_y + stripe_h}, true);
+        const ImU32 colors[2] = {
+            toU32WithAlpha(t.palette.primary, 0.8f),
+            toU32WithAlpha(t.palette.secondary, 0.8f),
+        };
+        const ImU32 segment_fills[2] = {
+            toU32WithAlpha(t.palette.primary, 0.25f),
+            toU32WithAlpha(t.palette.secondary, 0.25f),
+        };
+        const ImU32 curve_color = toU32WithAlpha(t.palette.primary, 0.5f);
+
+        for (size_t i = 0; i + 1 < keyframes.size(); ++i) {
+            const float x0 = localTimeToX(keyframes[i].time);
+            const float x1 = localTimeToX(keyframes[i + 1].time);
+            dl->AddRectFilled({x0, stripe_y}, {x1, stripe_y + stripe_h}, segment_fills[i % 2]);
+        }
+
+        for (size_t i = 0; i + 1 < keyframes.size(); ++i) {
+            const auto& kf_a = keyframes[i];
+            const auto& kf_b = keyframes[i + 1];
+            const auto easing = kf_a.easing;
+            const float x0 = localTimeToX(kf_a.time);
+            const float x1 = localTimeToX(kf_b.time);
+
+            if (easing == sequencer::EasingType::LINEAR) {
+                dl->AddLine({x0, y_center}, {x1, y_center}, curve_color, CURVE_THICKNESS);
+                continue;
+            }
+
+            ImVec2 points[CURVE_SAMPLES + 1];
+            for (int s = 0; s <= CURVE_SAMPLES; ++s) {
+                const float t_norm = static_cast<float>(s) / static_cast<float>(CURVE_SAMPLES);
+                const float eased = sequencer::applyEasing(t_norm, easing);
+                const float x = x0 + t_norm * (x1 - x0);
+                const float y = y_center - (eased - t_norm) * amplitude;
+                points[s] = {x, y};
+            }
+            dl->AddPolyline(points, CURVE_SAMPLES + 1, curve_color, ImDrawFlags_None, CURVE_THICKNESS);
+        }
+
+        for (size_t i = 0; i < keyframes.size(); ++i) {
+            const float kx = localTimeToX(keyframes[i].time);
+            const ImU32 kf_color = colors[i % 2];
+            dl->AddCircleFilled({kx, y_center}, DOT_RADIUS, kf_color);
+
+            const auto easing = keyframes[i].easing;
+            if (easing == sequencer::EasingType::LINEAR)
+                continue;
+
+            const float iy = y_center - stripe_h * 0.3f;
+            switch (easing) {
+            case sequencer::EasingType::EASE_IN:
+                dl->AddTriangleFilled(
+                    {kx, iy},
+                    {kx + INDICATOR_SIZE, iy - INDICATOR_SIZE},
+                    {kx - INDICATOR_SIZE, iy - INDICATOR_SIZE},
+                    kf_color);
+                break;
+            case sequencer::EasingType::EASE_OUT:
+                dl->AddTriangleFilled(
+                    {kx - INDICATOR_SIZE, iy},
+                    {kx + INDICATOR_SIZE, iy},
+                    {kx, iy - INDICATOR_SIZE},
+                    kf_color);
+                break;
+            case sequencer::EasingType::EASE_IN_OUT:
+                dl->AddQuadFilled(
+                    {kx, iy - INDICATOR_SIZE},
+                    {kx + INDICATOR_SIZE, iy - INDICATOR_SIZE * 0.5f},
+                    {kx, iy},
+                    {kx - INDICATOR_SIZE, iy - INDICATOR_SIZE * 0.5f},
+                    kf_color);
+                break;
+            default:
+                break;
+            }
+        }
+
+        dl->PopClipRect();
+
+        const auto& io = ImGui::GetIO();
+        const float mx = io.MousePos.x;
+        const float my = io.MousePos.y;
+        if (mx >= timeline_x && mx <= timeline_x + timeline_width &&
+            my >= stripe_y && my <= stripe_y + stripe_h) {
+            ImGui::GetIO().WantCaptureMouse = true;
+
+            if (ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+                std::optional<size_t> nearest;
+                float best_dist = panel_config::KEYFRAME_RADIUS * 3.0f * dp;
+                for (size_t i = 0; i < keyframes.size(); ++i) {
+                    const float dist = std::abs(mx - localTimeToX(keyframes[i].time));
+                    if (dist < best_dist) {
+                        best_dist = dist;
+                        nearest = i;
+                    }
+                }
+                overlay_->showContextMenu(mx, my, nearest, keyframe_gizmo_op_);
+            }
+
+            if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                std::optional<size_t> nearest;
+                float best_dist = panel_config::KEYFRAME_RADIUS * 2.0f * dp;
+                for (size_t i = 0; i < keyframes.size(); ++i) {
+                    const float dist = std::abs(mx - localTimeToX(keyframes[i].time));
+                    if (dist < best_dist) {
+                        best_dist = dist;
+                        nearest = i;
+                    }
+                }
+                if (nearest.has_value())
+                    lfs::core::events::cmd::SequencerSelectKeyframe{.keyframe_index = *nearest}.emit();
+            }
+        }
+    }
+
+    void SequencerUIManager::drawPlayheadLine() {
+        if (!panel_->isPlayheadInRange())
+            return;
+
+        const float dp = tl_geo_.dp;
+        const float px = std::round(panel_->cachedPlayheadScreenX());
+        const float panel_y = tl_geo_.panel_y;
+        const float line_top = panel_y + (panel_config::INNER_PADDING +
+                                          panel_config::RULER_HEIGHT + 4.0f) *
+                                             dp;
+        const float strip_offset = ui_state_.show_film_strip ? FilmStripRenderer::STRIP_HEIGHT : 0.0f;
+        const float line_bottom = panel_y + (panel_config::HEIGHT + panel_config::EASING_STRIPE_HEIGHT - panel_config::BORDER_OVERLAP) * dp + strip_offset;
+
+        auto* dl = ImGui::GetForegroundDrawList();
+        dl->AddLine({px, line_top}, {px, line_bottom},
+                    theme().error_u32(), panel_config::PLAYHEAD_WIDTH);
+    }
+
     void SequencerUIManager::initPipPreview() {
         if (pip_initialized_ || pip_init_failed_)
             return;
@@ -642,7 +866,9 @@ namespace lfs::vis::gui {
         const auto& t = theme();
         const float scale = ui_state_.pip_preview_scale;
         constexpr float MARGIN = 16.0f;
-        constexpr float PANEL_HEIGHT = 90.0f;
+        const float dp = panel_->cachedDpRatio();
+        const float panel_height = (90.0f + panel_config::EASING_STRIPE_HEIGHT) * dp +
+                                   (ui_state_.show_film_strip ? FilmStripRenderer::STRIP_HEIGHT : 0.0f);
         constexpr float PADDING = 4.0f;
         constexpr float TITLE_HEIGHT = 18.0f;
         const float scaled_width = static_cast<float>(PREVIEW_WIDTH) * scale;
@@ -651,7 +877,7 @@ namespace lfs::vis::gui {
 
         const ImVec2 pos(
             viewport.pos.x + MARGIN,
-            viewport.pos.y + viewport.size.y - PANEL_HEIGHT - total_height - MARGIN);
+            viewport.pos.y + viewport.size.y - panel_height - total_height - MARGIN);
         const ImVec2 size(scaled_width + PADDING * 2.0f, total_height);
 
         const ImU32 bg_color = toU32WithAlpha(t.palette.surface, 0.95f);
