@@ -611,7 +611,6 @@ namespace lfs::vis::gui {
     }
 
     void GuiManager::shutdown() {
-        lfs::python::shutdown_python_gl_resources();
         panel_layout_.saveState();
 
         if (video_extraction_thread_ && video_extraction_thread_->joinable())
@@ -619,6 +618,12 @@ namespace lfs::vis::gui {
         video_extraction_thread_.reset();
 
         async_tasks_.shutdown();
+
+        const bool need_gil = lfs::python::get_main_thread_state() != nullptr;
+        if (need_gil)
+            lfs::python::acquire_gil_main_thread();
+
+        lfs::python::shutdown_python_gl_resources();
 
         global_context_menu_->destroyGLResources();
         rml_status_bar_.shutdown();
@@ -628,6 +633,9 @@ namespace lfs::vis::gui {
         rml_shell_frame_.shutdown();
         startup_overlay_.shutdown();
         rmlui_manager_.shutdown();
+
+        if (need_gil)
+            lfs::python::release_gil_main_thread();
 
         sequencer_ui_.destroyGLResources();
         drag_drop_.shutdown();
