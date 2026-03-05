@@ -2267,6 +2267,9 @@ def get_ui_scale_preference() -> float:
 def set_clipboard_text(text: str) -> None:
     """Copy text to the system clipboard"""
 
+def set_mouse_cursor_hand() -> None:
+    """Set mouse cursor to hand pointer for this frame"""
+
 def set_language(lang_code: str) -> None:
     """Set language by code (e.g., 'en', 'de')"""
 

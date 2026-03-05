@@ -4581,6 +4581,11 @@ namespace lfs::python {
             [](const std::string& text) { SDL_SetClipboardText(text.c_str()); },
             nb::arg("text"), "Copy text to the system clipboard");
 
+        m.def(
+            "set_mouse_cursor_hand",
+            []() { ImGui::SetMouseCursor(ImGuiMouseCursor_Hand); },
+            "Set mouse cursor to hand pointer for this frame");
+
         // Language control (for Python-driven Edit menu)
         m.def(
             "set_language",

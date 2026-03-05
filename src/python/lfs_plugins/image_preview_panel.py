@@ -70,6 +70,7 @@ class ImagePreviewPanel(RmlPanel):
         self._drag_start_y = 0.0
         self._drag_start_pan_x = 0.0
         self._drag_start_pan_y = 0.0
+        self._hover_image = False
 
         self._doc = None
         self._dirty = True
@@ -124,6 +125,7 @@ class ImagePreviewPanel(RmlPanel):
             img_container.add_event_listener("mousedown", self._on_img_mousedown)
             img_container.add_event_listener("mouseup", self._on_img_mouseup)
             img_container.add_event_listener("mousemove", self._on_img_mousemove)
+            img_container.add_event_listener("mouseover", self._on_img_mouseover)
             img_container.add_event_listener("mouseout", self._on_img_mouseout)
 
         wf = doc.get_element_by_id("window-frame")
@@ -136,6 +138,8 @@ class ImagePreviewPanel(RmlPanel):
         self._dirty = True
 
     def on_update(self, doc):
+        if not self._fit_to_window and self._image_paths and self._hover_image:
+            lf.ui.set_mouse_cursor_hand()
         if not self._dirty:
             return False
         self._dirty = False
@@ -311,7 +315,11 @@ class ImagePreviewPanel(RmlPanel):
         self._pan_y = self._drag_start_pan_y + (my - self._drag_start_y)
         self._dirty = True
 
+    def _on_img_mouseover(self, _event):
+        self._hover_image = True
+
     def _on_img_mouseout(self, _event):
+        self._hover_image = False
         self._dragging = False
 
     def _on_layout_resize(self, _event):
@@ -364,13 +372,9 @@ class ImagePreviewPanel(RmlPanel):
             self._handle.dirty("panel_label")
 
     def _update_main_image(self, doc, has_images: bool):
-        img_container = doc.get_element_by_id("image-container")
         main_img = doc.get_element_by_id("main-image")
         mask_img = doc.get_element_by_id("mask-overlay")
         no_text = doc.get_element_by_id("no-image-text")
-
-        if img_container:
-            img_container.set_attribute("class", "pannable" if has_images and not self._fit_to_window else "")
 
         if not has_images:
             if main_img:
