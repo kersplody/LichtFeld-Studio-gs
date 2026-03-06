@@ -642,11 +642,14 @@ class ImagePreviewPanel(RmlPanel):
 
     # -- Helpers --
 
-    @staticmethod
-    def _scroll_filmstrip(filmstrip, index: int):
-        THUMB_H = 48  # 44dp height + border + margin
-        item_top = index * THUMB_H
-        item_bot = item_top + THUMB_H
+    def _scroll_filmstrip(self, filmstrip, index: int):
+        if not self._doc:
+            return
+        el = self._doc.get_element_by_id(f"thumb-{index}")
+        if not el:
+            return
+        item_top = el.offset_top
+        item_bot = item_top + el.offset_height
         view_h = filmstrip.client_height
         if view_h <= 0:
             return
