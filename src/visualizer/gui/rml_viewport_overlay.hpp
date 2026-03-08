@@ -26,8 +26,9 @@ namespace lfs::vis::gui {
     public:
         void init(RmlUIManager* mgr);
         void shutdown();
-        void setViewportBounds(glm::vec2 pos, glm::vec2 size);
+        void setViewportBounds(glm::vec2 pos, glm::vec2 size, glm::vec2 screen_origin);
         void render();
+        void compositeToScreen(int screen_w, int screen_h) const;
         void processInput();
         bool wantsInput() const { return wants_input_; }
 
@@ -43,6 +44,7 @@ namespace lfs::vis::gui {
 
         glm::vec2 vp_pos_{0, 0};
         glm::vec2 vp_size_{0, 0};
+        glm::vec2 screen_origin_{0, 0};
         std::size_t last_theme_signature_ = 0;
         bool has_theme_signature_ = false;
         std::string base_rcss_;

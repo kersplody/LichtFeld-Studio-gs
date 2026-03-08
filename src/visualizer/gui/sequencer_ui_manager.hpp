@@ -16,6 +16,7 @@
 #include <chrono>
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
+#include <imgui.h>
 #include <memory>
 #include <optional>
 #include <ImGuizmo.h>
@@ -37,6 +38,7 @@ namespace lfs::vis {
 
             void setupEvents();
             void render(const UIContext& ctx, const ViewportLayout& viewport);
+            void compositeOverlays(int screen_w, int screen_h) const;
 
             void destroyGLResources();
 

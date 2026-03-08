@@ -10,8 +10,22 @@
 #include "python/python_runtime.hpp"
 
 #include <cassert>
+#include <mutex>
+#include <unordered_set>
 
 namespace lfs::vis::gui {
+
+    namespace {
+        void warnLegacyRmlImguiPathOnce(const char* feature) {
+            static std::mutex mutex;
+            static std::unordered_set<std::string> warned_features;
+            std::lock_guard lock(mutex);
+            if (warned_features.emplace(feature).second) {
+                LOG_WARN("Rml transition: '{}' is a legacy ImGui compatibility path. "
+                         "Keep it for compatibility, but do not add new usage.", feature);
+            }
+        }
+    } // namespace
 
     bool RmlPythonPanelAdapter::ensureHost() {
         if (host_)
@@ -35,6 +49,8 @@ namespace lfs::vis::gui {
         if (!draw_imgui_checked_) {
             has_draw_imgui_ = nb::hasattr(panel_instance_, "draw_imgui");
             draw_imgui_checked_ = true;
+            if (has_draw_imgui_)
+                warnLegacyRmlImguiPathOnce("RmlPanel.draw_imgui");
         }
         if (!bind_model_checked_) {
             has_bind_model_ = nb::hasattr(panel_instance_, "on_bind_model");
@@ -278,23 +294,6 @@ namespace lfs::vis::gui {
             return 0.0f;
         const auto& ops = lfs::python::get_rml_panel_host_ops();
         return ops.get_content_height ? ops.get_content_height(host_) : 0.0f;
-    }
-
-    bool RmlPythonPanelAdapter::hasImguiOverlay() const {
-        return has_draw_imgui_;
-    }
-
-    void RmlPythonPanelAdapter::drawImguiOverlay(const PanelDrawContext& ctx) {
-        (void)ctx;
-        if (!has_draw_imgui_ || !lfs::python::can_acquire_gil())
-            return;
-        const lfs::python::GilAcquire gil;
-        try {
-            lfs::python::PyUILayout layout;
-            panel_instance_.attr("draw_imgui")(layout);
-        } catch (const std::exception& e) {
-            LOG_ERROR("RmlPanel draw_imgui error: {}", e.what());
-        }
     }
 
     void RmlPythonPanelAdapter::setInputClipY(float y_min, float y_max) {

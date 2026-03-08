@@ -102,7 +102,7 @@ input[type="checkbox"] {
     border-color: #585b70;
     margin: 0 6dp 0 0;
     padding: 0;
-    transition: background-color border-color 0.12s quadratic-out;
+    transition: background-color 0.12s quadratic-out, border-color 0.12s quadratic-out;
 }
 
 input[type="checkbox"]:checked {
@@ -283,7 +283,7 @@ progress fill {
     border-radius: 4dp;
     border-color: rgba(137, 180, 250, 42);
     background-color: rgba(137, 180, 250, 36);
-    transition: background-color border-color 0.16s cubic-out;
+    transition: background-color 0.16s cubic-out, border-color 0.16s cubic-out;
 }
 
 .section-header:hover {
@@ -303,7 +303,7 @@ progress fill {
     color: #cdd6f4;
     text-align: center;
     transform: rotate(0deg);
-    transition: transform color opacity 0.18s cubic-out;
+    transition: transform 0.18s cubic-out, color 0.18s cubic-out, opacity 0.18s cubic-out;
 }
 
 .section-header:hover .section-arrow,
@@ -460,7 +460,7 @@ progress fill {
     border-color: #585b70;
     cursor: pointer;
     text-align: center;
-    transition: background-color border-color 0.12s quadratic-out;
+    transition: background-color 0.12s quadratic-out, border-color 0.12s quadratic-out;
 }
 
 .btn:hover {
@@ -480,7 +480,7 @@ progress fill {
     background-color: #89b4fa;
     border-color: #89b4fa;
     color: #1e1e2e;
-    transition: background-color border-color 0.12s quadratic-out;
+    transition: background-color 0.12s quadratic-out, border-color 0.12s quadratic-out;
 }
 
 .btn--primary:hover {
@@ -497,7 +497,7 @@ progress fill {
     background-color: #a6e3a1;
     border-color: #a6e3a1;
     color: #1e1e2e;
-    transition: background-color border-color 0.12s quadratic-out;
+    transition: background-color 0.12s quadratic-out, border-color 0.12s quadratic-out;
 }
 
 .btn--success:hover {
@@ -514,7 +514,7 @@ progress fill {
     background-color: #f9e2af;
     border-color: #f9e2af;
     color: #1e1e2e;
-    transition: background-color border-color 0.12s quadratic-out;
+    transition: background-color 0.12s quadratic-out, border-color 0.12s quadratic-out;
 }
 
 .btn--warning:hover {
@@ -531,7 +531,7 @@ progress fill {
     background-color: #f38ba8;
     border-color: #f38ba8;
     color: #1e1e2e;
-    transition: background-color border-color 0.12s quadratic-out;
+    transition: background-color 0.12s quadratic-out, border-color 0.12s quadratic-out;
 }
 
 .btn--error:hover {
@@ -627,6 +627,18 @@ progress fill {
     padding: 0 0 0 2dp;
 }
 
+.text-default {
+    color: #cdd6f4;
+}
+
+.text-muted {
+    color: #a6adc8;
+}
+
+.text-accent {
+    color: #89b4fa;
+}
+
 .empty-message {
     display: block;
     padding: 8dp 6dp;
@@ -672,7 +684,7 @@ crf-curve {
     margin-left: 2dp;
     flex-shrink: 0;
     cursor: pointer;
-    transition: background-color border-color 0.12s quadratic-out;
+    transition: background-color 0.12s quadratic-out, border-color 0.12s quadratic-out;
 }
 
 /* ── Full-width button ─────────────────────────────────── */
@@ -699,6 +711,10 @@ crf-curve {
     padding: 2dp 0;
 }
 
+.border-error {
+    border-color: #f38ba8;
+}
+
 .status-success {
     color: #a6e3a1;
 }
@@ -713,4 +729,31 @@ crf-curve {
 
 .status-info {
     color: #cdd6f4;
+}
+
+.interactive-row {
+    transition: background-color 0.1s quadratic-out;
+}
+
+.interactive-row:hover {
+    background-color: rgba(137, 180, 250, 40);
+}
+
+.interactive-row.selected {
+    background-color: rgba(137, 180, 250, 64);
+}
+
+.select-chip {
+    color: #cdd6f4;
+    background-color: rgba(255, 255, 255, 18);
+    transition: background-color 0.1s quadratic-out, color 0.1s quadratic-out;
+}
+
+.select-chip:hover {
+    background-color: rgba(137, 180, 250, 40);
+}
+
+.select-chip.selected {
+    color: #1e1e2e;
+    background-color: #89b4fa;
 }

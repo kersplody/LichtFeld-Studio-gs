@@ -38,6 +38,7 @@ namespace lfs::vis::gui {
 
     static std::string s_frame_tooltip;
     static bool s_frame_wants_keyboard = false;
+    std::vector<RmlPanelHost::CompositeCommand> RmlPanelHost::queued_foreground_composites_;
 
     void RmlPanelHost::pushTextInput(const std::string& text) {
         std::lock_guard lock(s_text_mutex);
@@ -97,6 +98,27 @@ namespace lfs::vis::gui {
         bool result = s_frame_wants_keyboard;
         s_frame_wants_keyboard = false;
         return result;
+    }
+
+    void RmlPanelHost::clearQueuedForegroundComposites() {
+        queued_foreground_composites_.clear();
+    }
+
+    void RmlPanelHost::flushQueuedForegroundComposites(const int screen_w, const int screen_h) {
+        if (screen_w <= 0 || screen_h <= 0) {
+            queued_foreground_composites_.clear();
+            return;
+        }
+
+        for (const auto& cmd : queued_foreground_composites_) {
+            if (!cmd.fbo || !cmd.fbo->valid())
+                continue;
+            cmd.fbo->blitToScreenClipped(cmd.x, cmd.y, cmd.w, cmd.h,
+                                         screen_w, screen_h,
+                                         cmd.clip_x1, cmd.clip_y1,
+                                         cmd.clip_x2, cmd.clip_y2);
+        }
+        queued_foreground_composites_.clear();
     }
 
     using rml_theme::colorToRml;
@@ -289,7 +311,10 @@ namespace lfs::vis::gui {
         if (document_)
             return true;
         try {
-            const auto full_path = lfs::vis::getAssetPath(rml_path_);
+            const auto requested_path = std::filesystem::path(rml_path_);
+            const auto full_path = requested_path.is_absolute()
+                                       ? requested_path
+                                       : lfs::vis::getAssetPath(rml_path_);
             document_ = rml_context_->LoadDocument(full_path.string());
             if (document_) {
                 syncThemeProperties();
@@ -636,12 +661,53 @@ namespace lfs::vis::gui {
             render_needed_ = true;
 
         renderIfDirty(pw, ph, display_h);
+        compositeDirectToScreen(x, y, w, display_h);
+    }
 
-        assert(input_ && input_->bg_draw_list);
-        auto* dl = static_cast<ImDrawList*>(input_->bg_draw_list);
-        dl->PushClipRect(ImVec2(x, y), ImVec2(x + w, y + h), true);
-        fbo_.blitToDrawListOpaque(input_->bg_draw_list, x, y, w, display_h);
-        dl->PopClipRect();
+    void RmlPanelHost::compositeDirectToScreen(const float x, const float y,
+                                               const float w, const float h) const {
+        if (!input_ || !fbo_.valid() || w <= 0.0f || h <= 0.0f)
+            return;
+
+        float clip_x1 = x;
+        float clip_y1 = y;
+        float clip_x2 = x + w;
+        float clip_y2 = y + h;
+
+        if (clip_y_min_ >= 0.0f && clip_y_max_ > clip_y_min_) {
+            clip_y1 = std::max(clip_y1, clip_y_min_);
+            clip_y2 = std::min(clip_y2, clip_y_max_);
+        }
+
+        if (clip_x2 <= clip_x1 || clip_y2 <= clip_y1)
+            return;
+
+        const float screen_x = x - input_->screen_x;
+        const float screen_y = y - input_->screen_y;
+        const float screen_clip_x1 = clip_x1 - input_->screen_x;
+        const float screen_clip_y1 = clip_y1 - input_->screen_y;
+        const float screen_clip_x2 = clip_x2 - input_->screen_x;
+        const float screen_clip_y2 = clip_y2 - input_->screen_y;
+
+        if (foreground_) {
+            queued_foreground_composites_.push_back({
+                .fbo = &fbo_,
+                .x = screen_x,
+                .y = screen_y,
+                .w = w,
+                .h = h,
+                .clip_x1 = screen_clip_x1,
+                .clip_y1 = screen_clip_y1,
+                .clip_x2 = screen_clip_x2,
+                .clip_y2 = screen_clip_y2,
+            });
+            return;
+        }
+
+        fbo_.blitToScreenClipped(screen_x, screen_y, w, h,
+                                 input_->screen_w, input_->screen_h,
+                                 screen_clip_x1, screen_clip_y1,
+                                 screen_clip_x2, screen_clip_y2);
     }
 
     bool RmlPanelHost::forwardInput(float panel_x, float panel_y) {

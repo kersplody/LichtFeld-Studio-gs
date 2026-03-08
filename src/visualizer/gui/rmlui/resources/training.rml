@@ -583,17 +583,17 @@
     <span class="status-text status-info training-status-line">{{status_gaussians}}</span>
     <div data-if="show_progress">
       <div style="position: relative;">
-        <progress id="training-progress" max="1" />
+        <progress id="training-progress" max="1" data-attr-value="progress_value" />
         <span class="progress__text">{{progress_text}}</span>
       </div>
     </div>
     <div id="loss-graph-container">
-      <span id="loss-label" class="status-text status-info training-status-line"></span>
+      <span id="loss-label" class="status-text status-info training-status-line">{{loss_label}}</span>
       <div class="loss-graph-wrap">
         <div class="loss-graph-ticks">
-          <span id="loss-tick-max" class="loss-tick"></span>
-          <span id="loss-tick-mid" class="loss-tick"></span>
-          <span id="loss-tick-min" class="loss-tick"></span>
+          <span id="loss-tick-max" class="loss-tick">{{loss_tick_max}}</span>
+          <span id="loss-tick-mid" class="loss-tick">{{loss_tick_mid}}</span>
+          <span id="loss-tick-min" class="loss-tick">{{loss_tick_min}}</span>
         </div>
         <loss-graph id="loss-graph-el" />
       </div>

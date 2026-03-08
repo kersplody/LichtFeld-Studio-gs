@@ -248,16 +248,19 @@ namespace lfs::python {
         Mesh2SplatStartFn g_m2s_start;
         std::function<bool()> g_m2s_active;
         std::function<float()> g_m2s_progress;
+        std::function<std::string()> g_m2s_stage;
         std::function<std::string()> g_m2s_error;
     } // namespace
 
     void set_mesh2splat_callbacks(Mesh2SplatStartFn start,
                                   std::function<bool()> is_active,
                                   std::function<float()> get_progress,
+                                  std::function<std::string()> get_stage,
                                   std::function<std::string()> get_error) {
         g_m2s_start = std::move(start);
         g_m2s_active = std::move(is_active);
         g_m2s_progress = std::move(get_progress);
+        g_m2s_stage = std::move(get_stage);
         g_m2s_error = std::move(get_error);
     }
 
@@ -269,6 +272,7 @@ namespace lfs::python {
 
     bool invoke_mesh2splat_active() { return g_m2s_active ? g_m2s_active() : false; }
     float invoke_mesh2splat_progress() { return g_m2s_progress ? g_m2s_progress() : 0.0f; }
+    std::string invoke_mesh2splat_stage() { return g_m2s_stage ? g_m2s_stage() : std::string{}; }
     std::string invoke_mesh2splat_error() { return g_m2s_error ? g_m2s_error() : std::string{}; }
 
     namespace {

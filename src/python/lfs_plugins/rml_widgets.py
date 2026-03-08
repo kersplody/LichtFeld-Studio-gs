@@ -31,7 +31,7 @@ def _apply_section_visual_state(expanded, header_element=None, arrow_element=Non
         header_element.set_class("is-expanded", expanded)
         header_element.set_class("is-collapsed", not expanded)
     if arrow_element:
-        arrow_element.set_inner_rml("&#x25B6;")
+        arrow_element.set_text(chr(0x25B6))
         arrow_element.set_class("is-expanded", expanded)
         arrow_element.set_class("is-collapsed", not expanded)
 
@@ -104,7 +104,7 @@ def button(container, id, label, style="", disabled=False):
     if style:
         classes += f" btn--{style}"
     btn.set_class_names(classes)
-    btn.set_inner_rml(label)
+    btn.set_text(label)
     if disabled:
         btn.set_attribute("disabled", "disabled")
     return btn
@@ -131,7 +131,7 @@ def checkbox(container, id, label="", checked=False, data_prop=""):
     if label:
         span = lbl.append_child("span")
         span.set_id(f"text-{id}")
-        span.set_inner_rml(label)
+        span.set_text(label)
 
     return row
 
@@ -158,13 +158,13 @@ def slider(container, id, label="", min=0.0, max=1.0, step=0.01,
     val_span.set_id(f"val-{id}")
     val_span.set_class_names("slider-value")
     if value is not None:
-        val_span.set_inner_rml(f"{value:.3f}")
+        val_span.set_text(f"{value:.3f}")
 
     if label:
         prop_lbl = row.append_child("span")
         prop_lbl.set_id(f"label-{id}")
         prop_lbl.set_class_names("prop-label")
-        prop_lbl.set_inner_rml(label)
+        prop_lbl.set_text(label)
 
     return row
 
@@ -185,14 +185,15 @@ def select(container, id, label="", options=None, data_prop=""):
 
     if options:
         for val, text in options:
-            opt_rml = f'<option value="{val}">{text}</option>'
-            sel.set_inner_rml(sel.get_inner_rml() + opt_rml)
+            opt = sel.append_child("option")
+            opt.set_attribute("value", str(val))
+            opt.set_text(text)
 
     if label:
         prop_lbl = row.append_child("span")
         prop_lbl.set_id(f"label-{id}")
         prop_lbl.set_class_names("prop-label")
-        prop_lbl.set_inner_rml(label)
+        prop_lbl.set_text(label)
 
     return row
 
@@ -210,11 +211,11 @@ def collapsible(container, id, title="", open=True):
     arrow = header.append_child("span")
     arrow.set_class_names("section-arrow")
     arrow.set_id(f"arrow-{id}")
-    arrow.set_inner_rml("&#x25B6;")
+    arrow.set_text(chr(0x25B6))
 
     title_span = header.append_child("span")
     title_span.set_id(f"text-hdr-{id}")
-    title_span.set_inner_rml(title)
+    title_span.set_text(title)
 
     content = container.append_child("div")
     content.set_class_names("section-content")
@@ -238,7 +239,7 @@ def progress(container, id, value=0.0, label=""):
         text = wrapper.append_child("span")
         text.set_id(f"{id}-text")
         text.set_class_names("progress__text")
-        text.set_inner_rml(label)
+        text.set_text(label)
 
     return wrapper
 
@@ -253,7 +254,7 @@ def color_swatch(container, id, r=0, g=0, b=0, data_prop=""):
         comp = row.append_child("span")
         comp.set_class_names("color-comp")
         comp.set_id(f"{ch}c-{id}")
-        comp.set_inner_rml(f"{val:.0f}")
+        comp.set_text(f"{val:.0f}")
 
     swatch = row.append_child("div")
     swatch.set_class_names("color-swatch")
@@ -293,7 +294,7 @@ def setting_row(container, label="", control_id=""):
         lbl.set_class_names("prop-label")
         if control_id:
             lbl.set_id(f"label-{control_id}")
-        lbl.set_inner_rml(label)
+        lbl.set_text(label)
 
     return row
 
@@ -331,7 +332,7 @@ def number_input(container, id, label="", value="", data_prop="",
         prop_lbl = row.append_child("span")
         prop_lbl.set_id(f"label-{id}")
         prop_lbl.set_class_names("prop-label")
-        prop_lbl.set_inner_rml(label)
+        prop_lbl.set_text(label)
 
     return row
 

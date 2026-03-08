@@ -97,9 +97,12 @@ class Operator(PropertyGroup):
 
 
 class Panel:
-    """Base class for UI panels.
+    """Legacy immediate-mode base class for UI panels.
 
-    This is a minimal base class. Panels define:
+    This compatibility base remains available for existing plugins, but new
+    panels should prefer RmlPanel.
+
+    Panels define:
     - label: Display name
     - draw(layout): Render the panel content
     - poll(context): Optional visibility check
@@ -122,7 +125,7 @@ class Panel:
 
 
 class RmlPanel:
-    """Base class for Python panels using RmlUI DOM."""
+    """Preferred base class for Python panels using retained RmlUI DOM."""
 
     idname: str = ""
     label: str = ""
@@ -156,13 +159,19 @@ class RmlPanel:
 
 
 class Menu:
-    """Base class for menu definitions."""
+    """Base class for menu definitions.
+
+    New menus should prefer menu_items() and return a declarative schema.
+    draw(layout) remains available as a legacy fallback.
+    """
 
     label: str = ""
     location: str = "FILE"
     order: int = 100
 
+    def menu_items(self):
+        return []
+
     def draw(self, layout):
         pass
-
 

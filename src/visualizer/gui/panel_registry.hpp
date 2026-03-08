@@ -86,8 +86,6 @@ namespace lfs::vis::gui {
             draw(ctx);
         }
         virtual float getDirectDrawHeight() const { return 0.0f; }
-        virtual bool hasImguiOverlay() const { return false; }
-        virtual void drawImguiOverlay(const PanelDrawContext& ctx) { (void)ctx; }
         virtual void setInputClipY(float y_min, float y_max) {
             (void)y_min;
             (void)y_max;

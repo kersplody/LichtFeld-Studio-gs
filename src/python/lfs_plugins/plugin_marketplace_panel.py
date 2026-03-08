@@ -48,16 +48,6 @@ class CardOpState:
     progress: float = 0.0
     output_lines: List[str] = field(default_factory=list)
     finished_at: float = 0.0
-
-
-def _xml_escape(text: str) -> str:
-    return (text
-            .replace("&", "&amp;")
-            .replace("<", "&lt;")
-            .replace(">", "&gt;")
-            .replace('"', "&quot;"))
-
-
 class PluginMarketplacePanel(RmlPanel):
     """Floating plugin window for browsing, installing, and managing plugins."""
 
@@ -389,25 +379,7 @@ class PluginMarketplacePanel(RmlPanel):
             card_el.set_class("card--in-progress", state.phase == CardOpPhase.IN_PROGRESS)
             card_el.set_class("card--success", state.phase == CardOpPhase.SUCCESS)
             card_el.set_class("card--error", state.phase == CardOpPhase.ERROR)
-
-            feedback_el = doc.get_element_by_id(f"feedback-{card_id}")
-            if feedback_el:
-                if state.phase == CardOpPhase.IN_PROGRESS:
-                    msg = _xml_escape(state.message or tr("plugin_manager.working"))
-                    feedback_el.set_inner_rml(
-                        f'<progress class="card-progress" value="{state.progress:.2f}" max="1" />'
-                        f'<span class="card-progress-text">{msg}</span>'
-                    )
-                elif state.phase == CardOpPhase.SUCCESS:
-                    feedback_el.set_inner_rml(
-                        f'<span class="status-text status-success">{_xml_escape(state.message)}</span>'
-                    )
-                elif state.phase == CardOpPhase.ERROR:
-                    feedback_el.set_inner_rml(
-                        f'<span class="status-text status-error">{_xml_escape(state.message)}</span>'
-                    )
-                else:
-                    feedback_el.set_inner_rml("")
+            self._sync_feedback_state(doc, f"feedback-{card_id}", state, tr("plugin_manager.working"))
 
     def _update_manual_feedback(self, doc):
         card_id = "__manual_url__"
@@ -427,33 +399,48 @@ class PluginMarketplacePanel(RmlPanel):
 
         btn = doc.get_element_by_id("btn-install-url")
 
-        if state.phase == CardOpPhase.IN_PROGRESS:
-            msg = _xml_escape(state.message or tr("plugin_manager.working"))
-            feedback_el.set_inner_rml(
-                f'<progress class="card-progress" value="{state.progress:.2f}" max="1" />'
-                f'<span class="card-progress-text">{msg}</span>'
-            )
-            if btn:
+        self._sync_feedback_state(doc, "manual-feedback", state, tr("plugin_manager.working"))
+
+        if btn:
+            if state.phase == CardOpPhase.IN_PROGRESS:
                 btn.set_attribute("disabled", "disabled")
-        elif state.phase == CardOpPhase.SUCCESS:
-            feedback_el.set_inner_rml(
-                f'<span class="status-text status-success">{_xml_escape(state.message)}</span>'
-            )
-            if btn:
+            else:
                 btn.remove_attribute("disabled")
+
+        if state.phase == CardOpPhase.SUCCESS:
             self._manual_url = ""
             if self._handle:
                 self._handle.dirty("manual_url")
-        elif state.phase == CardOpPhase.ERROR:
-            feedback_el.set_inner_rml(
-                f'<span class="status-text status-error">{_xml_escape(state.message)}</span>'
-            )
-            if btn:
-                btn.remove_attribute("disabled")
-        else:
-            feedback_el.set_inner_rml("")
-            if btn:
-                btn.remove_attribute("disabled")
+
+    def _sync_feedback_state(self, doc, element_prefix: str, state: CardOpState, working_text: str):
+        feedback_el = doc.get_element_by_id(element_prefix)
+        if not feedback_el:
+            return
+
+        show_progress = state.phase == CardOpPhase.IN_PROGRESS
+        show_success = state.phase == CardOpPhase.SUCCESS
+        show_error = state.phase == CardOpPhase.ERROR
+
+        progress_el = doc.get_element_by_id(f"{element_prefix}-progress")
+        progress_text_el = doc.get_element_by_id(f"{element_prefix}-progress-text")
+        success_el = doc.get_element_by_id(f"{element_prefix}-success")
+        error_el = doc.get_element_by_id(f"{element_prefix}-error")
+
+        feedback_el.set_class("hidden", not (show_progress or show_success or show_error))
+
+        if progress_el:
+            progress_el.set_class("hidden", not show_progress)
+            if show_progress:
+                progress_el.set_attribute("value", f"{state.progress:.2f}")
+        if progress_text_el:
+            progress_text_el.set_class("hidden", not show_progress)
+            progress_text_el.set_text(state.message or working_text if show_progress else "")
+        if success_el:
+            success_el.set_class("hidden", not show_success)
+            success_el.set_text(state.message if show_success else "")
+        if error_el:
+            error_el.set_class("hidden", not show_error)
+            error_el.set_text(state.message if show_error else "")
 
     # ── Event handlers ────────────────────────────────────────
 
@@ -599,9 +586,7 @@ class PluginMarketplacePanel(RmlPanel):
 
         msg_el = doc.get_element_by_id("confirm-message")
         if msg_el:
-            msg_el.set_inner_rml(
-                _xml_escape(tr("plugin_marketplace.confirm_uninstall_message").format(name=name))
-            )
+            msg_el.set_text(tr("plugin_marketplace.confirm_uninstall_message").format(name=name))
         overlay = doc.get_element_by_id("confirm-overlay")
         if overlay:
             overlay.set_class("hidden", False)

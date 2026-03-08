@@ -354,7 +354,7 @@ namespace lfs::python {
     std::string PyRmlElement::get_inner_rml() { return elem_->GetInnerRML(); }
 
     void PyRmlElement::set_text(const std::string& text) {
-        elem_->SetInnerRML(text);
+        elem_->SetInnerRML(Rml::StringUtilities::EncodeRml(text));
         mark_document_dirty(elem_);
     }
 

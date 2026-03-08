@@ -37,7 +37,10 @@ namespace lfs::vis::gui::rml_theme {
 
     std::string loadBaseRCSS(const std::string& asset_name) {
         try {
-            auto rcss_path = lfs::vis::getAssetPath(asset_name);
+            const auto requested_path = std::filesystem::path(asset_name);
+            const auto rcss_path = requested_path.is_absolute()
+                                       ? requested_path
+                                       : lfs::vis::getAssetPath(asset_name);
             std::ifstream f(rcss_path);
             if (f) {
                 return {std::istreambuf_iterator<char>(f),
@@ -167,6 +170,8 @@ namespace lfs::vis::gui::rml_theme {
         const auto background = colorToRml(p.background);
         const auto border = colorToRml(p.border);
         const auto primary_select = colorToRmlAlpha(p.primary, 0.18f);
+        const auto primary_select_strong = colorToRmlAlpha(p.primary, 0.28f);
+        const auto surface_bright_soft = colorToRmlAlpha(p.surface_bright, 0.55f);
 
         std::string check_path;
         try {
@@ -270,6 +275,9 @@ namespace lfs::vis::gui::rml_theme {
                        ".section-arrow {{ color: {1}; }}\n"
                        ".separator {{ background-color: {5}; }}\n"
                        ".text-disabled {{ color: {1}; }}\n"
+                       ".text-default {{ color: {0}; }}\n"
+                       ".text-muted {{ color: {1}; }}\n"
+                       ".text-accent {{ color: {4}; }}\n"
                        ".section-label {{ color: {1}; }}\n"
                        ".empty-message {{ color: {1}; }}\n"
                        ".color-swatch {{ border-color: {5}; }}\n"
@@ -285,9 +293,10 @@ namespace lfs::vis::gui::rml_theme {
                        ".btn:active {{ background-color: {2}; }}\n"
                        ".btn--secondary {{ background-color: transparent; border-color: {5}; color: {0}; }}\n"
                        ".btn--secondary:hover {{ background-color: {2}; }}\n"
+                       ".border-error {{ border-color: {10}; }}\n"
                        ".icon-btn.selected {{ background-color: {4}; }}\n",
                        text, text_dim, surface, surface_bright, primary, border,
-                       header_decor, header_hover_decor, rounding, prog_fill_decor) +
+                       header_decor, header_hover_decor, rounding, prog_fill_decor, error) +
                    std::format(
                        ".btn--primary {{ background-color: {0}; border-color: {0}; color: {6}; }}\n"
                        ".btn--primary:hover {{ background-color: {1}; border-color: {1}; }}\n"
@@ -310,8 +319,14 @@ namespace lfs::vis::gui::rml_theme {
                        ".status-success {{ color: {0}; }}\n"
                        ".status-error {{ color: {1}; }}\n"
                        ".status-muted {{ color: {2}; }}\n"
-                       ".status-info {{ color: {3}; }}\n",
-                       success, error, text_dim, info) +
+                       ".status-info {{ color: {3}; }}\n"
+                       ".interactive-row:hover {{ background-color: {4}; }}\n"
+                       ".interactive-row.selected {{ background-color: {5}; }}\n"
+                       ".select-chip {{ color: {6}; background-color: {7}; }}\n"
+                       ".select-chip:hover {{ background-color: {4}; }}\n"
+                       ".select-chip.selected {{ color: {6}; background-color: {8}; }}\n",
+                       success, error, text_dim, info, primary_select,
+                       primary_select_strong, text, surface_bright_soft, primary) +
                    std::format(
                        ".setting-row {{ padding: {0}dp 0; }}\n"
                        ".indent {{ margin-left: {1}dp; }}\n"

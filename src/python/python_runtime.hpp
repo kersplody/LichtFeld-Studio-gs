@@ -311,11 +311,13 @@ namespace lfs::python {
         Mesh2SplatStartFn start,
         std::function<bool()> is_active,
         std::function<float()> get_progress,
+        std::function<std::string()> get_stage,
         std::function<std::string()> get_error);
     LFS_PYTHON_RUNTIME_API void invoke_mesh2splat_start(std::shared_ptr<core::MeshData> mesh, const std::string& name,
                                                         const core::Mesh2SplatOptions& options);
     LFS_PYTHON_RUNTIME_API bool invoke_mesh2splat_active();
     LFS_PYTHON_RUNTIME_API float invoke_mesh2splat_progress();
+    LFS_PYTHON_RUNTIME_API std::string invoke_mesh2splat_stage();
     LFS_PYTHON_RUNTIME_API std::string invoke_mesh2splat_error();
 
     // Scene panel state callbacks

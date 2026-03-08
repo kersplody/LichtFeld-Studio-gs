@@ -14,6 +14,7 @@
 #include "gui/rmlui/rmlui_manager.hpp"
 #include "gui/rmlui/rmlui_render_interface.hpp"
 #include "internal/resource_paths.hpp"
+#include "python/ui_hooks.hpp"
 #include "python/python_runtime.hpp"
 #include "theme/theme.hpp"
 
@@ -81,6 +82,11 @@ namespace lfs::vis::gui {
             t.palette.primary.w));
         const auto selected_icon = colorToRml(t.palette.background);
         const auto hover_bg = colorToRmlAlpha(t.palette.surface_bright, 0.3f);
+        const auto overlay_backdrop = colorToRmlAlpha(t.palette.background, 0.55f);
+        const auto overlay_panel_bg = colorToRmlAlpha(t.palette.surface, 0.97f);
+        const auto overlay_panel_border = colorToRmlAlpha(t.palette.border, 0.45f);
+        const auto overlay_text = colorToRml(t.palette.text);
+        const auto overlay_text_dim = colorToRml(t.palette.text_dim);
 
         return std::format(
             ".toolbar-container {{ background-color: {}; border-radius: {:.0f}dp; }}\n"
@@ -89,12 +95,20 @@ namespace lfs::vis::gui {
             ".icon-btn:hover {{ background-color: {}; }}\n"
             ".icon-btn.selected {{ background-color: {}; }}\n"
             ".icon-btn.selected:hover {{ background-color: {}; }}\n"
-            ".icon-btn.selected img {{ image-color: {}; }}\n",
+            ".icon-btn.selected img {{ image-color: {}; }}\n"
+            ".viewport-status-backdrop {{ background-color: {}; }}\n"
+            ".viewport-status-panel {{ background-color: {}; border-color: {}; border-radius: {:.0f}dp; }}\n"
+            ".viewport-status-title {{ color: {}; }}\n"
+            ".viewport-status-path {{ color: {}; }}\n"
+            ".viewport-status-stage {{ color: {}; }}\n",
             toolbar_bg, t.sizes.window_rounding,
             subtoolbar_bg, t.sizes.window_rounding,
             icon_dim,
             hover_bg,
-            selected_bg, selected_bg_hover, selected_icon);
+            selected_bg, selected_bg_hover, selected_icon,
+            overlay_backdrop,
+            overlay_panel_bg, overlay_panel_border, t.sizes.window_rounding,
+            overlay_text, overlay_text_dim, overlay_text_dim);
     }
 
     void RmlViewportOverlay::updateTheme() {
@@ -113,9 +127,11 @@ namespace lfs::vis::gui {
         rml_theme::applyTheme(document_, base_rcss_, rml_theme::generateAllThemeMedia([this](const auto& th) { return generateThemeRCSS(th); }));
     }
 
-    void RmlViewportOverlay::setViewportBounds(glm::vec2 pos, glm::vec2 size) {
+    void RmlViewportOverlay::setViewportBounds(glm::vec2 pos, glm::vec2 size,
+                                               glm::vec2 screen_origin) {
         vp_pos_ = pos;
         vp_size_ = size;
+        screen_origin_ = screen_origin;
     }
 
     void RmlViewportOverlay::processInput() {
@@ -166,6 +182,11 @@ namespace lfs::vis::gui {
         if (!rml_manager_->shouldDeferFboUpdate(fbo_)) {
             updateTheme();
 
+            if (lfs::python::has_python_hooks("viewport_overlay", "document")) {
+                lfs::python::invoke_python_document_hooks("viewport_overlay", "document", document_, true);
+                lfs::python::invoke_python_document_hooks("viewport_overlay", "document", document_, false);
+            }
+
             const int w = static_cast<int>(vp_size_.x);
             const int h = static_cast<int>(vp_size_.y);
 
@@ -198,12 +219,15 @@ namespace lfs::vis::gui {
             fbo_.unbind(prev_fbo);
         }
 
-        if (fbo_.valid()) {
-            auto* vp = ImGui::GetMainViewport();
-            const ImVec2 blit_pos(vp_pos_.x, vp_pos_.y);
-            const ImVec2 blit_size(vp_size_.x, vp_size_.y);
-            fbo_.blitToDrawList(ImGui::GetForegroundDrawList(vp), blit_pos, blit_size);
-        }
+    }
+
+    void RmlViewportOverlay::compositeToScreen(const int screen_w, const int screen_h) const {
+        if (!fbo_.valid() || screen_w <= 0 || screen_h <= 0)
+            return;
+        fbo_.blitToScreen(vp_pos_.x - screen_origin_.x,
+                          vp_pos_.y - screen_origin_.y,
+                          vp_size_.x, vp_size_.y,
+                          screen_w, screen_h);
     }
 
 } // namespace lfs::vis::gui

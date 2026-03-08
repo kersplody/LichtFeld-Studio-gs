@@ -8,6 +8,7 @@
 
 #include "gui/rml_modal_overlay.hpp"
 #include "core/logger.hpp"
+#include "gui/panel_layout.hpp"
 #include "gui/rmlui/rml_input_utils.hpp"
 #include "gui/rmlui/rml_theme.hpp"
 #include "gui/rmlui/rmlui_manager.hpp"
@@ -243,7 +244,7 @@ namespace lfs::vis::gui {
             on_cancel();
     }
 
-    void RmlModalOverlay::processInput() {
+    void RmlModalOverlay::processInput(const PanelInputState& input) {
         if (!active_ || !rml_context_ || !elements_cached_)
             return;
 
@@ -251,8 +252,8 @@ namespace lfs::vis::gui {
         io.WantCaptureMouse = true;
         io.WantCaptureKeyboard = true;
 
-        const float mx = io.MousePos.x;
-        const float my = io.MousePos.y;
+        const float mx = input.mouse_x - input.screen_x;
+        const float my = input.mouse_y - input.screen_y;
         rml_context_->ProcessMouseMove(static_cast<int>(mx), static_cast<int>(my), 0);
 
         if (ImGui::IsMouseClicked(ImGuiMouseButton_Left))
@@ -291,6 +292,7 @@ namespace lfs::vis::gui {
     }
 
     void RmlModalOverlay::render(int screen_w, int screen_h,
+                                 float screen_x, float screen_y,
                                  float vp_x, float vp_y, float vp_w, float vp_h) {
         bool has_pending;
         {
@@ -334,8 +336,8 @@ namespace lfs::vis::gui {
                 const float dp_ratio = rml_manager_->getDpRatio();
                 const float dialog_w = static_cast<float>(active_->width_dp) * dp_ratio;
                 const float dialog_h = el_dialog_->GetClientHeight();
-                const float vp_cx = vp_x + vp_w * 0.5f;
-                const float vp_cy = vp_y + vp_h * 0.5f;
+                const float vp_cx = (vp_x - screen_x) + vp_w * 0.5f;
+                const float vp_cy = (vp_y - screen_y) + vp_h * 0.5f;
                 el_dialog_->SetProperty("left", std::format("{}px", vp_cx - dialog_w * 0.5f));
                 el_dialog_->SetProperty("top", std::format("{}px", vp_cy - dialog_h * 0.5f));
                 rml_context_->Update();
@@ -361,12 +363,9 @@ namespace lfs::vis::gui {
             fbo_.unbind(prev_fbo);
         }
 
-        if (fbo_.valid()) {
-            auto* vp = ImGui::GetMainViewport();
-            const ImVec2 pos(0, 0);
-            const ImVec2 size(static_cast<float>(screen_w), static_cast<float>(screen_h));
-            fbo_.blitToDrawList(ImGui::GetForegroundDrawList(vp), pos, size);
-        }
+        if (fbo_.valid())
+            fbo_.blitToScreen(0.0f, 0.0f, static_cast<float>(screen_w), static_cast<float>(screen_h),
+                              screen_w, screen_h);
     }
 
     void RmlModalOverlay::destroyGLResources() {

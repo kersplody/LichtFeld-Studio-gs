@@ -52,6 +52,8 @@ namespace lfs::vis::gui {
         static std::string consumeFrameTooltip();
         static void setFrameTooltip(const std::string& tip);
         static bool consumeFrameWantsKeyboard();
+        static void clearQueuedForegroundComposites();
+        static void flushQueuedForegroundComposites(int screen_w, int screen_h);
 
         void setHeightMode(HeightMode mode) { height_mode_ = mode; }
         HeightMode getHeightMode() const { return height_mode_; }
@@ -86,6 +88,19 @@ namespace lfs::vis::gui {
         void restoreScrollTop(float scroll_top);
         void resolveDirectRenderHeight(float requested_h, int& ph, float& display_h) const;
         void renderIfDirty(int pw, int ph, float& display_h);
+        void compositeDirectToScreen(float x, float y, float w, float h) const;
+
+        struct CompositeCommand {
+            const RmlFBO* fbo = nullptr;
+            float x = 0.0f;
+            float y = 0.0f;
+            float w = 0.0f;
+            float h = 0.0f;
+            float clip_x1 = 0.0f;
+            float clip_y1 = 0.0f;
+            float clip_x2 = 0.0f;
+            float clip_y2 = 0.0f;
+        };
 
         RmlUIManager* manager_;
         std::string context_name_;
@@ -124,6 +139,8 @@ namespace lfs::vis::gui {
         int last_forwarded_mx_ = -1;
         int last_forwarded_my_ = -1;
         bool last_hovered_ = false;
+
+        static std::vector<CompositeCommand> queued_foreground_composites_;
     };
 
 } // namespace lfs::vis::gui
