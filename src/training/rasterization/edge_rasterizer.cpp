@@ -104,7 +104,6 @@ namespace lfs::training {
                 pixel_weights_ptr,
                 accum_weights_out);
         } catch (const std::exception& e) {
-           
         }
 
         // Check if forward failed due to OOM

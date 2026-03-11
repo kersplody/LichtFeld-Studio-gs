@@ -4,8 +4,8 @@
 
 #pragma once
 
-#include "helper_math.h"
 #include "edge_rasterization_config.h"
+#include "helper_math.h"
 #include <cstdint>
 #include <cub/cub.cuh>
 #include <cuda_fp16.h>

@@ -8,8 +8,8 @@
 #include "core/splat_data.hpp"
 #include "optimizer/adam_optimizer.hpp"
 #include "optimizer/render_output.hpp"
-#include <expected>
 #include <edge_rasterization_api.h>
+#include <expected>
 #include <string>
 
 namespace lfs::training {

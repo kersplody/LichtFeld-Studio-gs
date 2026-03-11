@@ -35,7 +35,7 @@ namespace edge_compute::rasterization::config {
     // higher values = less memory, more recomputation in backward pass
     // 32: baseline, 64: 50% less memory but requires recomputation in backward
     DEF int checkpoint_interval = 32;
-} // namespace fast_lfs::rasterization::config
+} // namespace edge_compute::rasterization::config
 
 namespace config = edge_compute::rasterization::config;
 

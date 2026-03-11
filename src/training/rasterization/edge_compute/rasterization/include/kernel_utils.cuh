@@ -4,8 +4,8 @@
 
 #pragma once
 
-#include "helper_math.h"
 #include "edge_rasterization_config.h"
+#include "helper_math.h"
 #include "utils.h"
 #include <cooperative_groups.h>
 namespace cg = cooperative_groups;

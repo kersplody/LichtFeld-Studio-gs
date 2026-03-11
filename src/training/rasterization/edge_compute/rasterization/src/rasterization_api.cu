@@ -5,10 +5,10 @@
 #include "buffer_utils.h"
 #include "core/cuda/memory_arena.hpp"
 #include "cuda_utils.h"
-#include "forward.h"
-#include "helper_math.h"
 #include "edge_rasterization_api.h"
 #include "edge_rasterization_config.h"
+#include "forward.h"
+#include "helper_math.h"
 #include "utils.h"
 #include <cstring>
 #include <cuda_runtime.h>
@@ -110,26 +110,26 @@ namespace edge_compute::rasterization {
             auto [n_visible_primitives, n_instances,
                   primitive_primitive_indices_selector,
                   instance_primitive_indices_selector] = edge_forward(per_primitive_buffers_func,
-                                                                 per_tile_buffers_func,
-                                                                 per_instance_buffers_func,
-                                                                 reinterpret_cast<const float3*>(means_ptr),
-                                                                 reinterpret_cast<const float3*>(scales_raw_ptr),
-                                                                 reinterpret_cast<const float4*>(rotations_raw_ptr),
-                                                                 opacities_raw_ptr,
-                                                                 reinterpret_cast<const float4*>(w2c_ptr),
-                                                                 reinterpret_cast<const float3*>(cam_position_ptr),
-                                                                 alpha_ptr,
-                                                                 n_primitives,
-                                                                 width,
-                                                                 height,
-                                                                 focal_x,
-                                                                 focal_y,
-                                                                 center_x,
-                                                                 center_y,
-                                                                 near_plane,
-                                                                 far_plane,
-                                                                 pixel_weights,
-                                                                 accum_weights);
+                                                                      per_tile_buffers_func,
+                                                                      per_instance_buffers_func,
+                                                                      reinterpret_cast<const float3*>(means_ptr),
+                                                                      reinterpret_cast<const float3*>(scales_raw_ptr),
+                                                                      reinterpret_cast<const float4*>(rotations_raw_ptr),
+                                                                      opacities_raw_ptr,
+                                                                      reinterpret_cast<const float4*>(w2c_ptr),
+                                                                      reinterpret_cast<const float3*>(cam_position_ptr),
+                                                                      alpha_ptr,
+                                                                      n_primitives,
+                                                                      width,
+                                                                      height,
+                                                                      focal_x,
+                                                                      focal_y,
+                                                                      center_x,
+                                                                      center_y,
+                                                                      near_plane,
+                                                                      far_plane,
+                                                                      pixel_weights,
+                                                                      accum_weights);
 
             // Verify allocations happened
             if (n_instances > 0 && !per_instance_buffers_blob) {

@@ -5,9 +5,9 @@
 #pragma once
 
 #include "buffer_utils.h"
+#include "edge_rasterization_config.h"
 #include "helper_math.h"
 #include "kernel_utils.cuh"
-#include "edge_rasterization_config.h"
 #include "utils.h"
 #include <cooperative_groups.h>
 #include <cstdint>
@@ -422,7 +422,7 @@ namespace edge_compute::rasterization::kernels::forward {
                 const float contribution_factor = transmittance * alpha;
 
                 transmittance *= (1.0f - alpha);
-      
+
                 atomicAdd(&accum_weights[collected_primitive_idx[j]], thread_pixel_weight * contribution_factor);
 
                 if (transmittance < config::transmittance_threshold) {

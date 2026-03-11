@@ -47,13 +47,13 @@ namespace edge_compute::rasterization {
     };
 
     ForwardContext edge_forward_raw(
-        const float* means_ptr,                // Device pointer [N*3]
-        const float* scales_raw_ptr,           // Device pointer [N*3]
-        const float* rotations_raw_ptr,        // Device pointer [N*4]
-        const float* opacities_raw_ptr,        // Device pointer [N]
-        const float* w2c_ptr,                  // Device pointer [4*4]
-        const float* cam_position_ptr,         // Device pointer [3]
-        float* alpha_ptr,                      // Device pointer [H*W]
+        const float* means_ptr,         // Device pointer [N*3]
+        const float* scales_raw_ptr,    // Device pointer [N*3]
+        const float* rotations_raw_ptr, // Device pointer [N*4]
+        const float* opacities_raw_ptr, // Device pointer [N]
+        const float* w2c_ptr,           // Device pointer [4*4]
+        const float* cam_position_ptr,  // Device pointer [3]
+        float* alpha_ptr,               // Device pointer [H*W]
         int n_primitives,
         int width,
         int height,
@@ -69,4 +69,4 @@ namespace edge_compute::rasterization {
     // Pre-compile all CUDA kernels to avoid JIT delays during rendering
     void warmup_kernels();
 
-} // namespace fast_lfs::rasterization
+} // namespace edge_compute::rasterization

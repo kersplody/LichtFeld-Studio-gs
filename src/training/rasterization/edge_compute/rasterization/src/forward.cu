@@ -3,10 +3,10 @@
  * SPDX-License-Identifier: GPL-3.0-or-later */
 
 #include "buffer_utils.h"
+#include "edge_rasterization_config.h"
 #include "forward.h"
 #include "helper_math.h"
 #include "kernels_forward.cuh"
-#include "edge_rasterization_config.h"
 #include "utils.h"
 #include <cub/cub.cuh>
 #include <functional>
@@ -193,8 +193,9 @@ std::tuple<int, int, int, int> edge_compute::rasterization::edge_forward(
     const int alloc_buckets = std::max(n_buckets, 1);
     char* per_bucket_buffers_blob = per_bucket_buffers_func(required<PerBucketBuffers>(alloc_buckets));
     PerBucketBuffers per_bucket_buffers = PerBucketBuffers::from_blob(per_bucket_buffers_blob, alloc_buckets);
-    
-    */// Perform blending
+
+    */
+    // Perform blending
     kernels::forward::edge_blend_cu<<<grid, block>>>(
         per_tile_buffers.instance_ranges,
         per_instance_buffers.primitive_indices.Current(),

@@ -177,7 +177,7 @@ namespace lfs::training::kernels {
         bool revised_opacity,
         cudaStream_t stream = nullptr);
 
-     /**
+    /**
      * @brief In-place Long-Axis-Split selected Gaussians
      *
      * Modifies original Gaussians in-place for first split result,
