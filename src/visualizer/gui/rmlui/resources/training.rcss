@@ -28,16 +28,29 @@ body {
     margin-left: 0;
 }
 
+.setting-row {
+    gap: 4dp;
+    min-width: 0;
+}
+
 select {
     flex: 1;
+    min-width: 0;
+    min-height: 18dp;
+    box-sizing: border-box;
 }
 
 .number-input {
     flex: 1;
+    min-width: 0;
+    min-height: 18dp;
 }
 
 .setting-slider {
     flex: 1;
+    min-width: 0;
+    min-height: 18dp;
+    margin-top: 0;
 }
 
 .training-panel-title {

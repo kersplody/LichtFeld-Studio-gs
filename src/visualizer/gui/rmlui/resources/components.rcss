@@ -215,8 +215,11 @@ select {
     background-color: #313244;
     border-width: 1dp;
     border-color: #45475a;
-    padding: 2dp 6dp;
+    height: 18dp;
+    min-height: 18dp;
+    padding: 0;
     min-width: 80dp;
+    box-sizing: border-box;
     transition: border-color 0.12s quadratic-out;
 }
 
@@ -240,13 +243,25 @@ selectbox option:hover {
     background-color: #89b4fa;
 }
 
-selectvalue {
-    padding-top: 2dp;
+select selectvalue {
+    width: auto;
+    height: 16dp;
+    line-height: 16dp;
+    margin-right: 18dp;
+    padding: 0 0 0 6dp;
+    box-sizing: border-box;
+    position: relative;
+    top: -4dp;
 }
 
-selectarrow {
-    width: 14dp;
-    margin-left: 4dp;
+select selectarrow {
+    width: 18dp;
+    height: 16dp;
+    line-height: 16dp;
+    text-align: center;
+    box-sizing: border-box;
+    position: relative;
+    top: -4dp;
 }
 
 /* ── Progress ───────────────────────────────────────────── */

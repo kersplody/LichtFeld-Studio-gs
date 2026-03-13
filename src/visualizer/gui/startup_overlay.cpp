@@ -61,7 +61,7 @@ namespace lfs::vis::gui {
             auto* el = event.GetCurrentElement();
             if (!el)
                 return;
-            auto* select = rmlui_dynamic_cast<Rml::ElementFormControlSelect*>(el);
+            auto* select = dynamic_cast<Rml::ElementFormControlSelect*>(el);
             if (!select)
                 return;
             int idx = select->GetSelection();
@@ -141,7 +141,7 @@ namespace lfs::vis::gui {
         auto* select_el = document_->GetElementById("lang-select");
         if (!select_el)
             return;
-        auto* select = rmlui_dynamic_cast<Rml::ElementFormControlSelect*>(select_el);
+        auto* select = dynamic_cast<Rml::ElementFormControlSelect*>(select_el);
         if (!select)
             return;
 
@@ -375,7 +375,7 @@ namespace lfs::vis::gui {
         auto* lang_el = document_ ? document_->GetElementById("lang-select") : nullptr;
         bool rml_select_open = false;
         if (lang_el) {
-            auto* sel = rmlui_dynamic_cast<Rml::ElementFormControlSelect*>(lang_el);
+            auto* sel = dynamic_cast<Rml::ElementFormControlSelect*>(lang_el);
             if (sel)
                 rml_select_open = sel->IsSelectBoxVisible();
         }
