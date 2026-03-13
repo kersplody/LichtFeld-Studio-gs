@@ -5,7 +5,8 @@ This repository exposes a large local MCP surface for LichtFeld Studio. When the
 ## Fast Start
 
 - MCP server config lives in `.mcp.json`.
-- Default endpoint: `http://localhost:45677/mcp`.
+- Repo MCP config launches `scripts/lichtfeld_mcp_bridge.py`, which starts LichtFeld Studio and then proxies MCP over the local HTTP endpoint.
+- Default HTTP endpoint after startup: `http://localhost:45677/mcp`.
 - Initialize first, then use `tools/list` and `resources/list`.
 - Read these resources before guessing tool names or argument shapes:
   1. `lichtfeld://runtime/catalog`
@@ -28,6 +29,7 @@ Pull narrower resources only when needed:
 
 ## Operating Rules
 
+- Prefer the bridge-backed `.mcp.json` entry when you want Codex to start LichtFeld for you. Use the raw HTTP endpoint only if LichtFeld is already running.
 - Prefer resources for discovery and current state; use tools for mutations.
 - Check tool metadata before invoking: `category`, `kind`, `runtime`, `thread_affinity`, `destructive`, `long_running`, `user_visible`.
 - For long-running operations, pair the mutating call with `runtime.job.describe`, `runtime.job.wait`, or `runtime.events.tail` instead of sleeping.
