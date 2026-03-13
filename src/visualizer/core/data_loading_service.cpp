@@ -48,10 +48,16 @@ namespace lfs::vis {
         if (scene_manager_->getContentType() == SceneManager::ContentType::Dataset) {
             scene_manager_->clear();
         }
-        scene_manager_->changeContentType(SceneManager::ContentType::SplatFiles);
 
-        const std::string name = lfs::core::path_to_utf8(path.stem());
-        scene_manager_->addSplatFile(path, name);
+        if (scene_manager_->getContentType() == SceneManager::ContentType::SplatFiles) {
+            const std::string name = lfs::core::path_to_utf8(path.stem());
+            scene_manager_->addSplatFile(path, name);
+            return;
+        }
+
+        // First import into an empty scene must take the full load path so SceneLoaded,
+        // application-scene binding, and UI state all refresh together.
+        scene_manager_->loadSplatFile(path);
     }
 
     void DataLoadingService::handleLoadCheckpointForTrainingCommand(
