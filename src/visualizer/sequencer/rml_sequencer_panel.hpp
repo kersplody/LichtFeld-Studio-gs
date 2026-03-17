@@ -215,6 +215,7 @@ namespace lfs::vis {
         Rml::Element* el_resolution_info_ = nullptr;
         Rml::Element* el_quality_slider_ = nullptr;
         Rml::Element* el_quality_value_ = nullptr;
+        Rml::Element* el_btn_equirect_ = nullptr;
         Rml::Element* el_btn_save_ = nullptr;
         Rml::Element* el_btn_load_ = nullptr;
         Rml::Element* el_btn_export_ = nullptr;

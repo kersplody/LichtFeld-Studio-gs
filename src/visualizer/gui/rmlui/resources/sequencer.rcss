@@ -149,6 +149,10 @@ body {
     height: 4dp;
 }
 
+#btn-equirect {
+    min-width: 46dp;
+}
+
 /* --- Transport overrides --- */
 
 .cam-path-icon {

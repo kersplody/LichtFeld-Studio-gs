@@ -157,6 +157,10 @@ namespace lfs::vis {
             ui.show_film_strip = !ui.show_film_strip;
         else if (id == "btn-preview")
             ui.show_pip_preview = !ui.show_pip_preview;
+        else if (id == "btn-equirect") {
+            ui.equirectangular = !ui.equirectangular;
+            lfs::core::events::ui::RenderSettingsChanged{.equirectangular = ui.equirectangular}.emit();
+        }
         else if (id == "btn-speed") {
             const size_t idx = findSpeedIndex(ui.playback_speed);
             const size_t next = (idx + 1) % SPEED_PRESETS.size();
@@ -282,6 +286,7 @@ namespace lfs::vis {
         el_resolution_info_ = document_->GetElementById("resolution-info");
         el_quality_slider_ = document_->GetElementById("quality-slider");
         el_quality_value_ = document_->GetElementById("quality-value");
+        el_btn_equirect_ = document_->GetElementById("btn-equirect");
         el_btn_save_ = document_->GetElementById("btn-save-path");
         el_btn_load_ = document_->GetElementById("btn-load-path");
         el_btn_export_ = document_->GetElementById("btn-export");
@@ -298,7 +303,7 @@ namespace lfs::vis {
         for (const char* btn_id : {"btn-skip-back", "btn-stop", "btn-play",
                                    "btn-skip-forward", "btn-loop", "btn-add",
                                    "btn-camera-path", "btn-snap", "btn-follow",
-                                   "btn-film-strip", "btn-preview", "btn-speed",
+                                   "btn-film-strip", "btn-preview", "btn-equirect", "btn-speed",
                                    "btn-format", "btn-save-path", "btn-load-path",
                                    "btn-export", "btn-clear"}) {
             auto* el = document_->GetElementById(btn_id);
@@ -725,9 +730,9 @@ namespace lfs::vis {
     }
 
     bool RmlSequencerPanel::consumeExportRequest() {
-        const bool r = export_requested_;
+        const bool request = export_requested_;
         export_requested_ = false;
-        return r;
+        return request;
     }
 
     bool RmlSequencerPanel::consumeClearRequest() {
@@ -753,6 +758,8 @@ namespace lfs::vis {
             el_btn_film_strip_->SetClass("active", ui_state_.show_film_strip);
         if (el_btn_preview_)
             el_btn_preview_->SetClass("active", ui_state_.show_pip_preview);
+        if (el_btn_equirect_)
+            el_btn_equirect_->SetClass("active", ui_state_.equirectangular);
         if (el_speed_label_)
             el_speed_label_->SetInnerRML(formatSpeed(ui_state_.playback_speed));
         if (el_format_label_)

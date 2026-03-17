@@ -93,6 +93,11 @@ namespace lfs::vis::gui {
     void SequencerUIManager::setupEvents() {
         using namespace lfs::core::events;
 
+        ui::RenderSettingsChanged::when([this](const auto& event) {
+            if (event.equirectangular)
+                ui_state_.equirectangular = *event.equirectangular;
+        });
+
         cmd::SequencerAddKeyframe::when([this](const auto&) {
             const auto& cam = viewer_->getViewport().camera;
 
@@ -149,6 +154,12 @@ namespace lfs::vis::gui {
         if (!sequencer_enabled) {
             setSequencerEnabled(false);
             return;
+        }
+
+        if (ui_state_.equirectangular != last_equirectangular_) {
+            last_equirectangular_ = ui_state_.equirectangular;
+            pip_needs_update_ = true;
+            film_strip_.invalidateAll();
         }
 
         if (ui_state_.show_camera_path) {
