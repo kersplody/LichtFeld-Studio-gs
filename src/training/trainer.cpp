@@ -1533,22 +1533,9 @@ namespace lfs::training {
                                 pred_chw = pred_chw.permute({2, 0, 1}).contiguous();
                                 gt_chw = gt_chw.permute({2, 0, 1}).contiguous();
                             }
-                            auto [ssim_value, ssim_ctx] = lfs::training::kernels::ssim_forward(
-                                pred_chw, gt_chw, densification_ssim_workspace_, false);
-                            (void)ssim_value;
-                            (void)ssim_ctx;
-                            const auto& fallback_ssim_map = densification_ssim_workspace_.ssim_map;
-                            {
-                                const size_t H = fallback_ssim_map.shape()[2];
-                                const size_t W = fallback_ssim_map.shape()[3];
-                                if (!densification_error_map_.is_valid() ||
-                                    densification_error_map_.shape()[0] != H ||
-                                    densification_error_map_.shape()[1] != W) {
-                                    densification_error_map_ = core::Tensor::empty({H, W}, core::Device::CUDA);
-                                }
-                                lfs::training::kernels::launch_ssim_to_error_map(fallback_ssim_map, densification_error_map_);
-                                tile_error_map = densification_error_map_;
-                            }
+                            lfs::training::kernels::ssim_error_map_forward(
+                                pred_chw, gt_chw, densification_ssim_workspace_, densification_error_map_);
+                            tile_error_map = densification_error_map_;
                         } else {
                             const lfs::core::Tensor abs_diff = (corrected_image - gt_tile).abs();
                             if (abs_diff.ndim() == 3 && abs_diff.shape()[0] == 3) {

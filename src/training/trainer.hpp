@@ -319,8 +319,8 @@ namespace lfs::training {
         // Cached GPU scalar to avoid per-iteration allocation
         core::Tensor loss_accumulator_;
 
-        // Pre-allocated SSIM workspace for densification error maps, eliminates repeated allocations
-        lfs::training::kernels::SSIMWorkspace densification_ssim_workspace_;
+        // Pre-allocated SSIM-map workspace for densification error maps.
+        lfs::training::kernels::SSIMMapWorkspace densification_ssim_workspace_;
         lfs::training::kernels::MaskedFusedL1SSIMWorkspace masked_fused_workspace_;
 
         // Pre-allocated error map buffer for densification (avoids per-iteration allocation)
