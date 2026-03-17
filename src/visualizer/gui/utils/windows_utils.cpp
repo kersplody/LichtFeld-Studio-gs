@@ -203,10 +203,13 @@ namespace lfs::vis::gui {
     } // namespace
 
     std::filesystem::path SaveJsonFileDialog(const std::string& defaultName) {
+        const std::filesystem::path default_path(defaultName);
+        const std::string normalized_default_name =
+            (default_path.extension() == ".json") ? defaultName : (defaultName + ".json");
 #ifdef _WIN32
         PWSTR filePath = nullptr;
         COMDLG_FILTERSPEC rgSpec[] = {{L"JSON File", L"*.json"}};
-        const std::wstring wDefaultName = utils::utf8_to_wstring(defaultName);
+        const std::wstring wDefaultName = utils::utf8_to_wstring(normalized_default_name);
 
         if (SUCCEEDED(utils::saveFileNative(filePath, rgSpec, 1, wDefaultName.c_str()))) {
             std::filesystem::path result(filePath);
@@ -218,7 +221,7 @@ namespace lfs::vis::gui {
         }
         return {};
 #else
-        const std::string escaped_name = shell_escape(defaultName + ".json");
+        const std::string escaped_name = shell_escape(normalized_default_name);
         const std::string primary = "zenity --file-selection --save --confirm-overwrite "
                                     "--file-filter='JSON files|*.json' "
                                     "--filename=" +

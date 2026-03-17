@@ -49,6 +49,7 @@ add_library(lfs_visualizer ${LFS_VIS_LIB_TYPE}
         gui/native_panels.cpp
         gui/layout_state.cpp
         gui/async_task_manager.cpp
+        gui/video_export_utils.cpp
         gui/startup_overlay.cpp
         gui/rml_menu_bar.cpp
         gui/rml_right_panel.cpp

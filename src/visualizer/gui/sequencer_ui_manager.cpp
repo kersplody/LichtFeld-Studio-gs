@@ -255,7 +255,7 @@ namespace lfs::vis::gui {
             overlay_->showFocalEdit(focal_req.keyframe_index, focal_req.current_focal_mm);
 
         if (panel_->consumeSavePathRequest()) {
-            const auto path = gui::SaveJsonFileDialog("camera_path.json");
+            const auto path = gui::SaveJsonFileDialog("camera_path");
             if (!path.empty()) {
                 if (controller_.saveToJson(path.string()))
                     LOG_INFO("Camera path saved to {}", path.string());
