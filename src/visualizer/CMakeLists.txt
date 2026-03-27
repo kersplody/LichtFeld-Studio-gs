@@ -79,6 +79,7 @@ add_library(lfs_visualizer ${LFS_VIS_LIB_TYPE}
         gui/keyframe_scene_sync.cpp
         gui/gizmo_transform.cpp
         gui/html_viewer_export.cpp
+        gui/scene_panel_native.cpp
         gui/ui_widgets.cpp
         gui_capabilities.cpp
         gui/panels/windows_console_utils.cpp
@@ -172,6 +173,7 @@ add_library(lfs_visualizer ${LFS_VIS_LIB_TYPE}
         gui/rmlui/elements/color_picker_element.cpp
         gui/rmlui/elements/crf_curve_element.cpp
         gui/rmlui/elements/loss_graph_element.cpp
+        gui/rmlui/elements/scene_graph_element.cpp
 )
 
 set_source_files_properties(

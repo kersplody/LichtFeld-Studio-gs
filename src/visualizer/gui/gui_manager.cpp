@@ -21,6 +21,7 @@
 #include "gui/panel_input_utils.hpp"
 #include "gui/panel_registry.hpp"
 #include "gui/panels/python_console_panel.hpp"
+#include "gui/scene_panel_native.hpp"
 #include "gui/rmlui/rml_panel_host.hpp"
 #include "gui/rmlui/rml_theme.hpp"
 #include "gui/rmlui/rmlui_render_interface.hpp"
@@ -817,6 +818,13 @@ namespace lfs::vis::gui {
         };
 
         // Floating panels (self-managed windows)
+        {
+            auto panel = std::static_pointer_cast<IPanel>(
+                std::make_shared<NativeScenePanel>(&rmlui_manager_));
+            native_panel_storage_.push_back(panel);
+            reg_panel("lfs.scene", "Scene", panel, PanelSpace::SceneHeader, 0);
+        }
+
         reg_panel("native.video_extractor", "Video Extractor",
                   make_panel(VideoExtractorPanel(video_widget_.get())),
                   PanelSpace::Floating, 11,
