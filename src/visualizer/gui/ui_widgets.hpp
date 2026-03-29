@@ -9,8 +9,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <glm/glm.hpp>
-#include <imgui.h>
 #include <string>
+#include <imgui.h>
 
 namespace lfs::vis::gui::widgets {
 
