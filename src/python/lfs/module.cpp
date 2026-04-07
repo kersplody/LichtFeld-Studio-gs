@@ -1796,7 +1796,8 @@ Mesh-to-Splat:
   lf.get_mesh2splat_error()      - Get error message
 
 Splat Simplify:
-  lf.simplify_splats("name")         - Simplify a splat node into a new output node
+  lf.simplify_splats("name", ratio=..., knn_k=..., merge_cap=..., opacity_prune_threshold=...)
+                                    - Simplify a splat node into a new output node
   lf.cancel_splat_simplify()         - Cancel the active simplify job
   lf.is_splat_simplify_active()      - Check if simplification is running
   lf.get_splat_simplify_progress()   - Get progress (0.0-1.0)

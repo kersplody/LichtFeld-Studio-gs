@@ -368,7 +368,7 @@ def can_transform_selection() -> bool:
     """Check if selected node can be transformed"""
 
 def get_num_gaussians() -> int:
-    """Get total number of gaussians in scene"""
+    """Get number of active gaussians in scene"""
 
 def get_node_transform(name: str) -> list[float] | None:
     """Get node transform matrix (16 floats, column-major)"""
@@ -1003,7 +1003,7 @@ def get_mesh2splat_error() -> str:
     Get error message from last mesh-to-splat conversion (empty on success)
     """
 
-def simplify_splats(source_name: str, ratio: float = 0.1, knn_k: int = 16, merge_cap: float = 0.5) -> None:
+def simplify_splats(source_name: str, ratio: float = 0.1, knn_k: int = 16, merge_cap: float = 0.5, opacity_prune_threshold: float = 0.10000000149011612) -> None:
     """Simplify a splat node asynchronously and create a new output node."""
 
 def cancel_splat_simplify() -> None:
