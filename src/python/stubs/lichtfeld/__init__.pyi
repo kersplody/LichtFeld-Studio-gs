@@ -405,10 +405,16 @@ def reset_camera() -> None:
     """Reset camera to default position and orientation"""
 
 def get_camera_navigation_mode() -> str:
-    """Get the active camera navigation mode ('orbit' or 'fpv')"""
+    """Get the active camera navigation mode ('orbit', 'trackball', or 'fpv')"""
 
 def set_camera_navigation_mode(mode: str) -> None:
     """Set the active camera navigation mode"""
+
+def get_camera_view_snap_enabled() -> bool:
+    """Check whether camera axis-view snapping is enabled"""
+
+def set_camera_view_snap_enabled(enabled: bool) -> None:
+    """Enable or disable camera axis-view snapping"""
 
 def toggle_fullscreen() -> None:
     """Toggle fullscreen mode"""

@@ -1318,12 +1318,7 @@ namespace lfs::vis::gui {
                 if (hovered_axis >= 0 && hovered_axis <= 5) {
                     const int axis = hovered_axis % 3;
                     const bool negative = hovered_axis >= 3;
-                    const glm::mat3 rotation = engine->getAxisViewRotation(axis, negative);
-                    const float dist = glm::length(active_viewport.camera.pivot - active_viewport.camera.t);
-
-                    active_viewport.camera.pivot = glm::vec3(0.0f);
-                    active_viewport.camera.R = rotation;
-                    active_viewport.camera.t = rotation[2] * dist;
+                    active_viewport.camera.setAxisAlignedView(axis, negative);
 
                     const auto& settings = rendering_manager->getSettings();
                     lfs::core::events::ui::GridSettingsChanged{

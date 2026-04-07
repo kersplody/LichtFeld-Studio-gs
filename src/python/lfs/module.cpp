@@ -1305,11 +1305,14 @@ NB_MODULE(lichtfeld, m) {
             const auto* controller = lfs::vis::InputController::instance();
             if (!controller)
                 return "orbit";
-            return controller->cameraNavigationMode() == lfs::vis::InputController::CameraNavigationMode::FPV
-                       ? "fpv"
-                       : "orbit";
+            switch (controller->cameraNavigationMode()) {
+            case lfs::vis::InputController::CameraNavigationMode::Orbit: return "orbit";
+            case lfs::vis::InputController::CameraNavigationMode::Trackball: return "trackball";
+            case lfs::vis::InputController::CameraNavigationMode::FPV: return "fpv";
+            }
+            return "orbit";
         },
-        "Get the active camera navigation mode ('orbit' or 'fpv')");
+        "Get the active camera navigation mode ('orbit', 'trackball', or 'fpv')");
     m.def(
         "set_camera_navigation_mode", [](const std::string& mode) {
             auto* controller = lfs::vis::InputController::instance();
@@ -1321,6 +1324,11 @@ NB_MODULE(lichtfeld, m) {
                     lfs::vis::InputController::CameraNavigationMode::Orbit);
                 return;
             }
+            if (mode == "trackball" || mode == "turntable") {
+                controller->setCameraNavigationMode(
+                    lfs::vis::InputController::CameraNavigationMode::Trackball);
+                return;
+            }
             if (mode == "fpv" || mode == "fly") {
                 controller->setCameraNavigationMode(
                     lfs::vis::InputController::CameraNavigationMode::FPV);
@@ -1328,9 +1336,23 @@ NB_MODULE(lichtfeld, m) {
             }
 
             throw std::invalid_argument(
-                "camera navigation mode must be 'orbit', 'fpv', or 'fly'");
+                "camera navigation mode must be 'orbit', 'trackball', 'turntable', 'fpv', or 'fly'");
         },
         nb::arg("mode"), "Set the active camera navigation mode");
+    m.def(
+        "get_camera_view_snap_enabled", []() -> bool {
+            const auto* controller = lfs::vis::InputController::instance();
+            return controller ? controller->cameraViewSnapEnabled() : false;
+        },
+        "Check whether camera axis-view snapping is enabled");
+    m.def(
+        "set_camera_view_snap_enabled", [](bool enabled) {
+            auto* controller = lfs::vis::InputController::instance();
+            if (!controller)
+                return;
+            controller->setCameraViewSnapEnabled(enabled);
+        },
+        nb::arg("enabled"), "Enable or disable camera axis-view snapping");
     m.def(
         "toggle_fullscreen", []() { lfs::core::events::ui::ToggleFullscreen{}.emit(); },
         "Toggle fullscreen mode");

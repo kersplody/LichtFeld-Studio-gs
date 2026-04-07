@@ -721,6 +721,11 @@ namespace lfs::vis {
                 } else {
                     viewport_.camera.endRotateAroundCenter();
                 }
+                if (released_viewport) {
+                    snapViewportToNearestAxis(*released_viewport);
+                } else {
+                    snapViewportToNearestAxis(viewport_);
+                }
                 drag_mode_ = DragMode::None;
                 drag_button_ = -1;
                 was_dragging = true;
@@ -976,7 +981,11 @@ namespace lfs::vis {
                 break;
             case DragMode::Orbit: {
                 float current_time = static_cast<float>(SDL_GetTicks() / 1000.0);
-                target_viewport->camera.updateRotateAroundCenter(pos, current_time);
+                if (camera_navigation_mode_ == CameraNavigationMode::Trackball) {
+                    target_viewport->camera.updateTrackballRotateAroundCenter(pos, current_time);
+                } else {
+                    target_viewport->camera.updateRotateAroundCenter(pos, current_time);
+                }
                 break;
             }
             default:
@@ -1410,14 +1419,23 @@ namespace lfs::vis {
 
         // Handle missed mouse release events (e.g., outside window)
         if (drag_mode_ == DragMode::Orbit && drag_button_released) {
+            auto* const released_viewport = drag_viewport_ ? drag_viewport_ : &viewport_;
             if (drag_viewport_) {
                 drag_viewport_->camera.endRotateAroundCenter();
+                snapViewportToNearestAxis(*drag_viewport_);
             } else {
                 viewport_.camera.endRotateAroundCenter();
+                snapViewportToNearestAxis(viewport_);
             }
             drag_mode_ = DragMode::None;
             drag_button_ = -1;
             drag_viewport_ = nullptr;
+
+            ui::CameraMove{
+                .rotation = released_viewport->getRotationMatrix(),
+                .translation = released_viewport->getTranslation()}
+                .emit();
+            onCameraMovementEnd();
         }
 
         if (drag_mode_ == DragMode::Pan && drag_button_released) {
@@ -1956,6 +1974,30 @@ namespace lfs::vis {
         if (was_camera_drag) {
             onCameraMovementEnd();
         }
+    }
+
+    bool InputController::snapViewportToNearestAxis(Viewport& target_viewport) {
+        if (!camera_view_snap_enabled_) {
+            return false;
+        }
+
+        constexpr float kAxisSnapAngleDegrees = 10.0f;
+        int snapped_axis = -1;
+        if (!target_viewport.camera.snapToNearestAxisView(
+                kAxisSnapAngleDegrees, &snapped_axis, nullptr)) {
+            return false;
+        }
+
+        if (auto* const rendering = services().renderingOrNull()) {
+            const auto settings = rendering->getSettings();
+            lfs::core::events::ui::GridSettingsChanged{
+                .enabled = settings.show_grid,
+                .plane = snapped_axis,
+                .opacity = settings.grid_opacity}
+                .emit();
+        }
+
+        return true;
     }
 
     Viewport& InputController::activeKeyboardViewport() {

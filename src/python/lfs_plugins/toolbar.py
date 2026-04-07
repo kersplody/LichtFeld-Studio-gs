@@ -255,7 +255,8 @@ class _GizmoToolbarController:
 class _UtilityToolbarController:
     _CAMERA_MODE_SPECS = (
         ("camera-orbit", "orbit", "Orbit Camera"),
-        ("camera-fpv", "fpv", "FPV Camera"),
+        ("world", "trackball", "Free Orbit Camera"),
+        ("camera-fpv", "fpv", "Fly Camera"),
     )
     _RENDER_MODE_SPECS = (
         ("blob", "splats", "toolbar.splat_rendering"),
@@ -277,6 +278,13 @@ class _UtilityToolbarController:
             camera_mode = "orbit"
         if camera_mode == "fly":
             camera_mode = "fpv"
+        if camera_mode == "turntable":
+            camera_mode = "trackball"
+
+        try:
+            camera_view_snap = bool(lf.get_camera_view_snap_enabled())
+        except Exception:
+            camera_view_snap = False
 
         has_render_manager = True
         try:
@@ -347,6 +355,16 @@ class _UtilityToolbarController:
                     selected=is_ortho,
                 )
             )
+            projection_buttons.append(
+                _button_record(
+                    "util-view-snap",
+                    "toggle_camera_view_snap",
+                    "",
+                    _icon_src("check"),
+                    tooltip_text="Snap Axis Views",
+                    selected=camera_view_snap,
+                )
+            )
 
             seq_visible = lf.ui.is_sequencer_visible()
             utility_extra_buttons.append(
@@ -399,6 +417,9 @@ class _UtilityToolbarController:
             return
         if action == "toggle_projection":
             lf.set_orthographic(not lf.is_orthographic())
+            return
+        if action == "toggle_camera_view_snap":
+            lf.set_camera_view_snap_enabled(not lf.get_camera_view_snap_enabled())
             return
         if action == "toggle_sequencer":
             lf.ui.set_sequencer_visible(not lf.ui.is_sequencer_visible())
