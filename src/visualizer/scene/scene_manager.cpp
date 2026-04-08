@@ -4059,4 +4059,11 @@ namespace lfs::vis {
         return selection_service_->applyMask(mask, SelectionMode::Replace);
     }
 
+    SelectionResult SceneManager::applySelectionMask(const lfs::core::Tensor& mask) {
+        if (!selection_service_)
+            return {false, 0, "Selection service not initialized"};
+
+        return selection_service_->applyMask(mask, SelectionMode::Replace);
+    }
+
 } // namespace lfs::vis

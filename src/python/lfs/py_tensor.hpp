@@ -189,6 +189,7 @@ namespace lfs::python {
         PyTensor masked_fill(const PyTensor& mask, float value) const;
         PyTensor& masked_fill_(const PyTensor& mask, float value);
         PyTensor nonzero() const;
+        PyTensor& index_add_(int dim, const PyTensor& indices, const PyTensor& src);
 
         // Linear algebra
         PyTensor matmul(const PyTensor& other) const;

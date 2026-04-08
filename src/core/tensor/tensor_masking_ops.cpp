@@ -20,6 +20,28 @@
 
 namespace lfs::core {
 
+    namespace {
+        template <typename T>
+        T masked_fill_cast(float value) {
+            return static_cast<T>(value);
+        }
+
+        template <>
+        __half masked_fill_cast<__half>(float value) {
+            return __float2half(value);
+        }
+
+        template <typename T>
+        void masked_fill_cpu(T* data, const unsigned char* mask_data, size_t n, float value) {
+            const T cast_value = masked_fill_cast<T>(value);
+            for (size_t i = 0; i < n; ++i) {
+                if (mask_data[i]) {
+                    data[i] = cast_value;
+                }
+            }
+        }
+    } // namespace
+
     // ============= Masking Operations =============
     Tensor Tensor::masked_select(const Tensor& mask) const {
         if (!is_valid() || !mask.is_valid()) {
@@ -107,17 +129,54 @@ namespace lfs::core {
         }
 
         if (device_ == Device::CUDA) {
-            tensor_ops::launch_masked_fill(ptr<float>(), mask.ptr<unsigned char>(),
-                                           value, numel(), stream());
+            switch (dtype_) {
+            case DataType::Float32:
+                tensor_ops::launch_masked_fill(ptr<float>(), mask.ptr<unsigned char>(),
+                                               value, numel(), stream());
+                break;
+            case DataType::Float16:
+                tensor_ops::launch_masked_fill(ptr<__half>(), mask.ptr<unsigned char>(),
+                                               __float2half(value), numel(), stream());
+                break;
+            case DataType::Int32:
+                tensor_ops::launch_masked_fill(ptr<int32_t>(), mask.ptr<unsigned char>(),
+                                               static_cast<int32_t>(value), numel(), stream());
+                break;
+            case DataType::Int64:
+                tensor_ops::launch_masked_fill(ptr<int64_t>(), mask.ptr<unsigned char>(),
+                                               static_cast<int64_t>(value), numel(), stream());
+                break;
+            case DataType::UInt8:
+            case DataType::Bool:
+                tensor_ops::launch_masked_fill(ptr<uint8_t>(), mask.ptr<unsigned char>(),
+                                               static_cast<uint8_t>(value), numel(), stream());
+                break;
+            default:
+                throw std::runtime_error("masked_fill_: unsupported dtype");
+            }
             // No sync - tensor operation
         } else {
-            float* data = ptr<float>();
             const unsigned char* mask_data = mask.ptr<unsigned char>();
 
-            for (size_t i = 0; i < numel(); ++i) {
-                if (mask_data[i]) {
-                    data[i] = value;
-                }
+            switch (dtype_) {
+            case DataType::Float32:
+                masked_fill_cpu(ptr<float>(), mask_data, numel(), value);
+                break;
+            case DataType::Float16:
+                masked_fill_cpu(ptr<__half>(), mask_data, numel(), value);
+                break;
+            case DataType::Int32:
+                masked_fill_cpu(ptr<int32_t>(), mask_data, numel(), value);
+                break;
+            case DataType::Int64:
+                masked_fill_cpu(ptr<int64_t>(), mask_data, numel(), value);
+                break;
+            case DataType::UInt8:
+            case DataType::Bool:
+                masked_fill_cpu(ptr<unsigned char>(), mask_data, numel(), value);
+                break;
+            default:
+                throw std::runtime_error("masked_fill_: unsupported dtype");
             }
         }
 

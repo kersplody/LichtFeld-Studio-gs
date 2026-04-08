@@ -725,6 +725,54 @@ namespace lfs::core {
                             }
                         }
                     }
+                } else if (left_tensor.dtype() == DataType::UInt8 && right_tensor.dtype() == DataType::UInt8) {
+                    // UInt8,UInt8 -> Bool (comparison operations on UInt8 tensors)
+                    if (device == Device::CUDA) {
+                        if (needs_broadcast) {
+                            tensor_ops::launch_broadcast_binary(
+                                left_tensor.template ptr<uint8_t>(),
+                                right_tensor.template ptr<uint8_t>(),
+                                result.template ptr<unsigned char>(),
+                                left_tensor.shape().dims().data(),
+                                right_tensor.shape().dims().data(),
+                                shape.dims().data(),
+                                left_tensor.shape().rank(), right_tensor.shape().rank(), shape.rank(),
+                                result.numel(), op, result.stream());
+                        } else {
+                            tensor_ops::launch_binary_op_generic(
+                                left_tensor.template ptr<uint8_t>(),
+                                right_tensor.template ptr<uint8_t>(),
+                                result.template ptr<unsigned char>(),
+                                result.numel(), op, result.stream());
+                        }
+                    } else {
+                        // CPU fallback
+                        if (!needs_broadcast) {
+                            const uint8_t* left_ptr = left_tensor.template ptr<uint8_t>();
+                            const uint8_t* right_ptr = right_tensor.template ptr<uint8_t>();
+                            unsigned char* out_ptr = result.template ptr<unsigned char>();
+                            size_t n = result.numel();
+                            for (size_t i = 0; i < n; ++i) {
+                                out_ptr[i] = op(left_ptr[i], right_ptr[i]);
+                            }
+                        } else {
+                            Tensor left_broadcast = left_tensor;
+                            Tensor right_broadcast = right_tensor;
+                            if (left_tensor.shape() != shape) {
+                                left_broadcast = left_tensor.broadcast_to(shape);
+                            }
+                            if (right_tensor.shape() != shape) {
+                                right_broadcast = right_tensor.broadcast_to(shape);
+                            }
+                            const uint8_t* left_ptr = left_broadcast.template ptr<uint8_t>();
+                            const uint8_t* right_ptr = right_broadcast.template ptr<uint8_t>();
+                            unsigned char* out_ptr = result.template ptr<unsigned char>();
+                            size_t n = result.numel();
+                            for (size_t i = 0; i < n; ++i) {
+                                out_ptr[i] = op(left_ptr[i], right_ptr[i]);
+                            }
+                        }
+                    }
                 } else {
                     // Float32,Float32 -> Bool (comparison operations: eq, ne, lt, le, gt, ge)
                     if (device == Device::CUDA) {

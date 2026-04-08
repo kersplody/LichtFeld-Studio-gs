@@ -62,11 +62,12 @@ class HistogramPanel(Panel):
         self._axis_max = "--"
         self._summary_text = ""
 
-        self._cached_values: lf.Tensor | None = None
-        self._visible_mask: lf.Tensor | None = None
+        self._selection_bin_indices: lf.Tensor | None = None
         self._hist_counts: list[int] | None = None
+        self._hist_prefix_counts: list[int] | None = None
         self._hist_edges: list[float] | None = None
-        self._applied_selection_values: lf.Tensor | None = None
+        self._selection_owned = False
+        self._pending_selection_commit = False
 
         self._dragging_mark = False
         self._marked_bin_start: int | None = None
@@ -174,11 +175,19 @@ class HistogramPanel(Panel):
         history_generation = self._history_generation_value()
         current_lang = lf.ui.get_current_language()
         trainer_state = AppState.trainer_state.value
+        scene_changed = scene_generation != self._scene_generation
+        history_changed = history_generation != self._history_generation
         if (scene_generation == self._scene_generation and
                 history_generation == self._history_generation and
                 trainer_state == self._trainer_state and
                 current_lang == self._last_lang):
             return False
+
+        if scene_changed or history_changed:
+            if self._pending_selection_commit:
+                self._pending_selection_commit = False
+            else:
+                self._selection_owned = False
 
         self._scene_generation = scene_generation
         self._history_generation = history_generation
@@ -260,7 +269,7 @@ class HistogramPanel(Panel):
             )
             return
 
-        visible_mask = self._extract_visible_mask(model, values.shape[0])
+        visible_mask = self._extract_visible_mask(model, values)
         finite_mask = values.isfinite()
         if visible_mask is not None and visible_mask.shape == values.shape:
             finite_mask = finite_mask & visible_mask
@@ -275,16 +284,19 @@ class HistogramPanel(Panel):
             )
             return
 
-        finite_values = values[finite_mask].contiguous().cpu().to("float32")
+        valid_values = values[finite_mask]
+        finite_values = valid_values.contiguous().cpu().to("float32")
         metric = METRIC_BY_ID[self._metric_id]
         histogram_min, histogram_max = self._histogram_bounds(finite_values)
-        counts, edges = self._build_histogram(finite_values, histogram_min, histogram_max)
+        selection_bin_indices = self._build_selection_bin_indices(values, finite_mask, histogram_min, histogram_max)
+        valid_bin_indices = self._bin_indices_for_values(valid_values, histogram_min, histogram_max)
+        counts, edges = self._build_histogram(valid_bin_indices, int(finite_values.shape[0]), histogram_min, histogram_max)
         peak_count = max(counts, default=0)
         sorted_values, _ = finite_values.sort(0, False)
 
-        self._cached_values = values
-        self._visible_mask = visible_mask
+        self._selection_bin_indices = selection_bin_indices
         self._hist_counts = counts
+        self._hist_prefix_counts = self._prefix_counts(counts)
         self._hist_edges = edges
 
         self._show_chart = True
@@ -304,7 +316,7 @@ class HistogramPanel(Panel):
         )
 
         if self._has_marked_range():
-            self._sync_marked_range(apply_scene=self._scene_selection_is_owned(scene))
+            self._sync_marked_range(apply_scene=False)
         else:
             self._reset_marked_state(clear_scene=False)
 
@@ -324,9 +336,9 @@ class HistogramPanel(Panel):
         self._axis_min = "--"
         self._axis_max = "--"
         self._summary_text = ""
-        self._cached_values = None
-        self._visible_mask = None
+        self._selection_bin_indices = None
         self._hist_counts = None
+        self._hist_prefix_counts = None
         self._hist_edges = None
         self._reset_marked_state(clear_scene=True)
         if self._handle:
@@ -372,12 +384,12 @@ class HistogramPanel(Panel):
     def _extract_metric_values(self, scene, model) -> lf.Tensor | None:
         try:
             if self._metric_id == "opacity":
-                return self._cpu_float_tensor(model.get_opacity()).reshape([-1])
+                return self._float_tensor(model.get_opacity()).reshape([-1])
 
             if self._metric_id == "distance":
                 return self._extract_distance_values(scene, model)
 
-            scaling = self._cpu_float_tensor(model.get_scaling()).reshape([-1, 3])
+            scaling = self._float_tensor(model.get_scaling()).reshape([-1, 3])
             if self._metric_id == "scale_x":
                 return scaling[:, 0]
             if self._metric_id == "scale_y":
@@ -391,9 +403,9 @@ class HistogramPanel(Panel):
             return None
 
     def _extract_distance_values(self, scene, model) -> lf.Tensor:
-        means = self._cpu_float_tensor(model.get_means()).reshape([-1, 3])
+        means = self._float_tensor(model.get_means()).reshape([-1, 3])
         if means.numel == 0:
-            return lf.Tensor.zeros([0], dtype="float32", device="cpu")
+            return lf.Tensor.zeros([0], dtype="float32", device=self._device_string(means))
 
         world_means = self._world_space_means(scene, means)
         if world_means is None:
@@ -417,7 +429,8 @@ class HistogramPanel(Panel):
             if next_offset > world_means.shape[0]:
                 return None
 
-            matrix = lf.mat4([list(row) for row in node.world_transform]).cpu().to("float32")
+            matrix = lf.mat4([list(row) for row in node.world_transform]).to("float32")
+            matrix = self._to_device(matrix, self._device_string(world_means))
             rotation = matrix[:3, :3].transpose(0, 1)
             translation = matrix[:3, 3].unsqueeze(0).expand([count, 3])
             world_means[offset:next_offset] = world_means[offset:next_offset].matmul(rotation) + translation
@@ -430,10 +443,10 @@ class HistogramPanel(Panel):
     def _distance_from_positions(self, scene, positions: lf.Tensor) -> lf.Tensor:
         finite_rows = positions.isfinite().all(1).reshape([-1])
         if not self._any_true(finite_rows):
-            return self._nan_tensor(int(positions.shape[0]))
+            return self._nan_tensor(int(positions.shape[0]), self._device_string(positions))
 
         center = self._resolve_scene_center(scene, positions, finite_rows)
-        distances = self._nan_tensor(int(positions.shape[0]))
+        distances = self._nan_tensor(int(positions.shape[0]), self._device_string(positions))
         centered = positions[finite_rows] - center.unsqueeze(0)
         distances[finite_rows] = centered.square().sum(1).sqrt().reshape([-1])
         return distances
@@ -486,7 +499,8 @@ class HistogramPanel(Panel):
 
     def _resolve_scene_center(self, scene, means: lf.Tensor, finite_rows: lf.Tensor) -> lf.Tensor:
         try:
-            center = self._cpu_float_tensor(scene.scene_center).reshape([-1])
+            center = self._float_tensor(scene.scene_center).reshape([-1])
+            center = self._to_device(center, self._device_string(means))
             if center.shape == (3,) and center.isfinite().all().bool_():
                 return center
         except Exception:
@@ -494,26 +508,37 @@ class HistogramPanel(Panel):
 
         finite_means = means[finite_rows]
         if finite_means.numel == 0:
-            return lf.Tensor.zeros([3], dtype="float32", device="cpu")
+            return lf.Tensor.zeros([3], dtype="float32", device=self._device_string(means))
         return finite_means.mean(0).reshape([-1]).to("float32")
 
     @staticmethod
-    def _cpu_float_tensor(tensor) -> lf.Tensor:
-        return tensor.contiguous().cpu().to("float32")
+    def _float_tensor(tensor) -> lf.Tensor:
+        return tensor.contiguous().to("float32")
+
+    @staticmethod
+    def _device_string(tensor: lf.Tensor) -> str:
+        return "cuda" if bool(getattr(tensor, "is_cuda", False)) else "cpu"
+
+    @staticmethod
+    def _to_device(tensor: lf.Tensor, device: str) -> lf.Tensor:
+        if device == "cuda":
+            return tensor if tensor.is_cuda else tensor.cuda()
+        return tensor.cpu() if tensor.is_cuda else tensor
 
     @staticmethod
     def _any_true(mask: lf.Tensor) -> bool:
         return bool(mask.count_nonzero())
 
     @staticmethod
-    def _nan_tensor(size: int) -> lf.Tensor:
-        return lf.Tensor.full([size], float("nan"), dtype="float32", device="cpu")
+    def _nan_tensor(size: int, device: str) -> lf.Tensor:
+        return lf.Tensor.full([size], float("nan"), dtype="float32", device=device)
 
-    def _extract_visible_mask(self, model, value_count: int) -> lf.Tensor | None:
+    def _extract_visible_mask(self, model, values: lf.Tensor) -> lf.Tensor | None:
         try:
             if bool(model.has_deleted_mask()):
-                deleted = model.deleted.contiguous().cpu().reshape([-1]).to("bool")
-                if int(deleted.shape[0]) == value_count:
+                deleted = model.deleted.contiguous().reshape([-1]).to("bool")
+                deleted = self._to_device(deleted, self._device_string(values))
+                if int(deleted.shape[0]) == int(values.shape[0]):
                     return ~deleted
         except Exception:
             pass
@@ -534,7 +559,13 @@ class HistogramPanel(Panel):
 
         return lo, hi
 
-    def _build_histogram(self, values: lf.Tensor, histogram_min: float, histogram_max: float) -> tuple[list[int], list[float]]:
+    def _build_histogram(
+        self,
+        bin_indices: lf.Tensor,
+        value_count: int,
+        histogram_min: float,
+        histogram_max: float,
+    ) -> tuple[list[int], list[float]]:
         edges = [
             histogram_min + (histogram_max - histogram_min) * (index / BIN_COUNT)
             for index in range(BIN_COUNT + 1)
@@ -543,15 +574,71 @@ class HistogramPanel(Panel):
         span = histogram_max - histogram_min
         if not math.isfinite(span) or span <= 0.0:
             counts = [0] * BIN_COUNT
-            if values.numel > 0:
-                counts[-1] = int(values.shape[0])
+            if value_count > 0:
+                counts[-1] = value_count
             return counts, edges
 
-        bin_indices = (((values - histogram_min) / span) * BIN_COUNT).floor().clamp(0.0, float(BIN_COUNT - 1)).to("int32")
-        counts = [0] * BIN_COUNT
-        for index in bin_indices.tolist():
-            counts[int(index)] += 1
+        device = self._device_string(bin_indices)
+        counts_tensor = lf.Tensor.zeros([BIN_COUNT], dtype="int32", device=device)
+        if value_count > 0:
+            ones = lf.Tensor.ones([value_count], dtype="int32", device=device)
+            counts_tensor.index_add_(0, bin_indices.contiguous().to("int32"), ones)
+        counts = counts_tensor.cpu().tolist() if counts_tensor.is_cuda else counts_tensor.tolist()
+        counts = [int(count) for count in counts]
         return counts, edges
+
+    @staticmethod
+    def _bin_indices_for_values(values: lf.Tensor, histogram_min: float, histogram_max: float) -> lf.Tensor:
+        value_count = int(values.shape[0]) if values.ndim > 0 else int(values.numel)
+        device = HistogramPanel._device_string(values)
+        if value_count <= 0:
+            return lf.Tensor.zeros([0], dtype="int32", device=device)
+
+        span = histogram_max - histogram_min
+        if not math.isfinite(span) or span <= 0.0:
+            return lf.Tensor.full([value_count], BIN_COUNT - 1, dtype="int32", device=device)
+
+        return (
+            (((values - histogram_min) / span) * BIN_COUNT)
+            .floor()
+            .clamp(0.0, float(BIN_COUNT - 1))
+            .reshape([-1])
+            .to("int32")
+        )
+
+    def _build_selection_bin_indices(
+        self,
+        values: lf.Tensor,
+        finite_mask: lf.Tensor,
+        histogram_min: float,
+        histogram_max: float,
+    ) -> lf.Tensor:
+        value_count = int(values.shape[0]) if values.ndim > 0 else int(values.numel)
+        device = self._device_string(values)
+        selection_bin_indices = lf.Tensor.full([value_count], -1, dtype="int32", device=device)
+        if value_count <= 0 or not self._any_true(finite_mask):
+            return selection_bin_indices
+
+        selection_bin_indices[finite_mask] = self._bin_indices_for_values(
+            values[finite_mask],
+            histogram_min,
+            histogram_max,
+        )
+        return selection_bin_indices
+
+    @staticmethod
+    def _prefix_counts(counts: list[int]) -> list[int]:
+        prefix = [0]
+        running = 0
+        for count in counts:
+            running += int(count)
+            prefix.append(running)
+        return prefix
+
+    def _marked_count_for_bins(self, lo: int, hi: int) -> int:
+        if self._hist_prefix_counts is None:
+            return 0
+        return int(self._hist_prefix_counts[hi + 1] - self._hist_prefix_counts[lo])
 
     @staticmethod
     def _percentile_from_sorted(sorted_values: lf.Tensor, percentile: float) -> float:
@@ -646,8 +733,7 @@ class HistogramPanel(Panel):
 
         range_min = float(self._hist_edges[lo])
         range_max = float(self._hist_edges[hi + 1])
-        selection_mask = self._selection_mask_for_range(range_min, range_max, hi == BIN_COUNT - 1)
-        self._marked_count = int(selection_mask.count_nonzero()) if selection_mask is not None else 0
+        self._marked_count = self._marked_count_for_bins(lo, hi)
         self._marked_range_text = self._format_range_text(range_min, range_max)
         self._marked_count_text = _trf(
             "histogram.gaussian_count",
@@ -661,7 +747,7 @@ class HistogramPanel(Panel):
 
         self._update_bin_records()
         if apply_scene:
-            self._apply_scene_selection(range_min, range_max, hi == BIN_COUNT - 1)
+            self._apply_scene_selection(lo, hi)
         if self._handle:
             self._handle.dirty_all()
 
@@ -680,7 +766,8 @@ class HistogramPanel(Panel):
         if clear_scene:
             self._clear_owned_scene_selection()
         else:
-            self._applied_selection_values = None
+            self._selection_owned = False
+            self._pending_selection_commit = False
 
     def _clear_marked_range(self, clear_scene: bool):
         self._reset_marked_state(clear_scene=clear_scene)
@@ -688,81 +775,42 @@ class HistogramPanel(Panel):
         if self._handle:
             self._handle.dirty_all()
 
-    def _selection_mask_for_range(
-        self,
-        range_min: float,
-        range_max: float,
-        include_upper_bound: bool,
-    ) -> lf.Tensor | None:
-        if self._cached_values is None:
+    def _selection_mask_for_bins(self, lo: int, hi: int) -> lf.Tensor | None:
+        if self._selection_bin_indices is None:
             return None
 
-        values = self._cached_values
-        mask = values.isfinite()
-        if self._visible_mask is not None and self._visible_mask.shape == values.shape:
-            mask = mask & self._visible_mask
-        mask = mask & (values >= range_min)
-        if include_upper_bound:
-            mask = mask & (values <= range_max)
-        else:
-            mask = mask & (values < range_max)
+        mask = self._selection_bin_indices >= lo
+        mask = mask & (self._selection_bin_indices <= hi)
         return mask
 
-    def _apply_scene_selection(self, range_min: float, range_max: float, include_upper_bound: bool):
+    def _apply_scene_selection(self, lo: int, hi: int):
         scene = lf.get_scene()
         if scene is None or not scene.is_valid():
-            self._applied_selection_values = None
+            self._selection_owned = False
+            self._pending_selection_commit = False
             return
 
-        mask = self._selection_mask_for_range(range_min, range_max, include_upper_bound)
+        mask = self._selection_mask_for_bins(lo, hi)
         if mask is None or not self._any_true(mask):
             scene.clear_selection()
-            self._applied_selection_values = None
+            self._selection_owned = False
+            self._pending_selection_commit = False
             return
 
-        group_id = 1
         try:
-            group_id = max(int(scene.active_selection_group or 0), 1)
+            scene.set_selection_mask(mask.contiguous())
+            self._selection_owned = True
+            self._pending_selection_commit = True
         except Exception:
-            pass
-
-        selection_values = lf.Tensor.zeros([int(mask.shape[0])], dtype="uint8", device="cpu")
-        selection_values[mask] = float(group_id)
-        scene.set_selection_mask(selection_values)
-        self._applied_selection_values = selection_values.clone()
+            self._selection_owned = False
+            self._pending_selection_commit = False
 
     def _clear_owned_scene_selection(self):
         scene = lf.get_scene()
-        if scene is not None and scene.is_valid() and self._scene_selection_is_owned(scene):
+        if scene is not None and scene.is_valid() and self._selection_owned:
             scene.clear_selection()
-        self._applied_selection_values = None
-
-    def _scene_selection_is_owned(self, scene) -> bool:
-        if self._applied_selection_values is None:
-            return False
-
-        current_values = self._scene_selection_values(scene)
-        if current_values is None:
-            return False
-
-        return (
-            current_values.shape == self._applied_selection_values.shape and
-            (current_values == self._applied_selection_values).all().bool_()
-        )
-
-    def _scene_selection_values(self, scene) -> lf.Tensor | None:
-        try:
-            selection_mask = scene.selection_mask
-        except Exception:
-            selection_mask = None
-
-        if selection_mask is None:
-            return None
-
-        try:
-            return selection_mask.contiguous().cpu().reshape([-1]).to("uint8")
-        except Exception:
-            return None
+        self._selection_owned = False
+        self._pending_selection_commit = False
 
     @staticmethod
     def _history_generation_value() -> int:
@@ -866,7 +914,7 @@ class HistogramPanel(Panel):
         if lo is None or hi is None or self._hist_edges is None:
             return
 
-        self._apply_scene_selection(float(self._hist_edges[lo]), float(self._hist_edges[hi + 1]), hi == BIN_COUNT - 1)
+        self._apply_scene_selection(lo, hi)
         error_message = self._execute_delete_pipeline()
         if error_message is not None:
             self._status_hint = _trf(

@@ -268,6 +268,7 @@ namespace lfs::python {
         case DataType::Float16: return tensor_.item<float>(); // Tensor handles conversion
         case DataType::Int32: return static_cast<float>(tensor_.item<int>());
         case DataType::Int64: return static_cast<float>(tensor_.item<int64_t>());
+        case DataType::UInt8: return static_cast<float>(tensor_.item<unsigned char>());
         case DataType::Bool: return tensor_.item<unsigned char>() != 0 ? 1.0f : 0.0f;
         default: return tensor_.item<float>();
         }
@@ -282,6 +283,8 @@ namespace lfs::python {
             return static_cast<int64_t>(tensor_.item<int>());
         } else if (tensor_.dtype() == DataType::Int64) {
             return tensor_.item<int64_t>();
+        } else if (tensor_.dtype() == DataType::UInt8 || tensor_.dtype() == DataType::Bool) {
+            return static_cast<int64_t>(tensor_.item<unsigned char>());
         }
         return static_cast<int64_t>(tensor_.item<float>());
     }
@@ -1261,6 +1264,11 @@ namespace lfs::python {
         return PyTensor(tensor_.nonzero());
     }
 
+    PyTensor& PyTensor::index_add_(int dim, const PyTensor& indices, const PyTensor& src) {
+        tensor_.index_add_(dim, indices.tensor_, src.tensor_);
+        return *this;
+    }
+
     // Linear algebra
     PyTensor PyTensor::matmul(const PyTensor& other) const {
         return PyTensor(tensor_.matmul(other.tensor_));
@@ -1773,6 +1781,8 @@ namespace lfs::python {
             .def("masked_fill", &PyTensor::masked_fill, nb::arg("mask"), nb::arg("value"), "Fill elements where mask is true")
             .def("masked_fill_", &PyTensor::masked_fill_, nb::arg("mask"), nb::arg("value"), nb::rv_policy::reference, "In-place fill elements where mask is true")
             .def("nonzero", &PyTensor::nonzero, "Indices of non-zero elements")
+            .def("index_add_", &PyTensor::index_add_, nb::arg("dim"), nb::arg("indices"), nb::arg("src"),
+                 nb::rv_policy::reference, "Add src into this tensor at indices along a dimension")
 
             // Linear algebra
             .def("matmul", &PyTensor::matmul, nb::arg("other"), "Matrix multiplication")

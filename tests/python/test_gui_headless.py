@@ -122,6 +122,20 @@ class TestTensorOpsWithoutNumpy:
         assert values.tolist() == [2, 0, 5, 0]
         assert values.count_nonzero() == 2
 
+    def test_tensor_index_add_counts_occurrences(self, lf):
+        """index_add_ should support NumPy-free histogram counting."""
+        counts = lf.Tensor.zeros([4], dtype="int32", device="cpu")
+        indices = lf.Tensor.zeros([4], dtype="int32", device="cpu")
+        indices[0] = 0
+        indices[1] = 2
+        indices[2] = 2
+        indices[3] = 3
+        ones = lf.Tensor.ones([4], dtype="int32", device="cpu")
+
+        counts.index_add_(0, indices, ones)
+
+        assert counts.tolist() == [1, 0, 2, 1]
+
 
 class TestOperatorStateManagement:
     """Test that operators handle state correctly."""

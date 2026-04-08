@@ -249,6 +249,7 @@ namespace lfs::vis {
                                                   int camera_index = 0);
         [[nodiscard]] SelectionResult selectRing(float x, float y, const std::string& mode, int camera_index = 0);
         [[nodiscard]] SelectionResult applySelectionMask(const std::vector<uint8_t>& mask);
+        [[nodiscard]] SelectionResult applySelectionMask(const lfs::core::Tensor& mask);
 
         void initSelectionService();
         [[nodiscard]] SelectionService* getSelectionService() { return selection_service_.get(); }
