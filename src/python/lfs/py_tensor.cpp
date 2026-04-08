@@ -1764,8 +1764,7 @@ namespace lfs::python {
             .def("any", &PyTensor::any, nb::arg("dim") = nb::none(), nb::arg("keepdim") = false, "Check if any true")
             .def("norm", &PyTensor::norm, nb::arg("p") = 2.0f, "Lp norm")
             .def("norm_scalar", &PyTensor::norm_scalar, nb::arg("p") = 2.0f, "Lp norm as scalar")
-            .def("sort", &PyTensor::sort, nb::arg("dim") = -1, nb::arg("descending") = false,
-                 "Sort tensor values along a dimension and return (values, indices)")
+            .def("sort", &PyTensor::sort, nb::arg("dim") = -1, nb::arg("descending") = false, "Sort tensor values along a dimension and return (values, indices)")
 
             // Advanced indexing
             .def("index_select", &PyTensor::index_select, nb::arg("dim"), nb::arg("indices"), "Select along dimension by indices")
