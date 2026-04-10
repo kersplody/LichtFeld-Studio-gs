@@ -106,6 +106,13 @@ METRICS = (
         "Ratio of largest to smallest activated scale. 1 is sphere-like; larger values are spikier.",
     ),
     HistogramMetric(
+        "erank",
+        "histogram.metric.erank.label",
+        "Effective Rank",
+        "histogram.metric.erank.description",
+        "Entropy-based effective rank of activated Gaussian scales. 1 is line-like, 2 is sheet-like, 3 is sphere-like.",
+    ),
+    HistogramMetric(
         "distance",
         "histogram.metric.distance.label",
         "Distance",

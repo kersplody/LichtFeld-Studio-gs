@@ -2,6 +2,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later */
 
 #include "core/logger.hpp"
+#include "internal/cuda_stream_context.hpp"
 #include "internal/tensor_impl.hpp"
 #include "internal/tensor_ops.hpp"
 #include <algorithm>
@@ -478,15 +479,21 @@ namespace lfs::core {
 
         auto indices_same_device = ensure_same_device(indices);
         auto flat = flatten();
-        auto result = empty(indices_same_device.shape(), device_, dtype_);
+        Tensor result;
 
         // DEBUG: Log device and CUDA state
         if (device_ == Device::CUDA) {
-            result.set_stream(stream());
+            const cudaStream_t execution_stream =
+                getCurrentCUDAStream() ? getCurrentCUDAStream() : stream();
+            waitForCUDAStream(execution_stream, stream());
+            waitForCUDAStream(execution_stream, indices_same_device.stream());
+            CUDAStreamGuard guard(execution_stream);
+            result = empty(indices_same_device.shape(), device_, dtype_);
             tensor_ops::launch_take(flat.ptr<float>(), indices_same_device.ptr<int>(),
-                                    result.ptr<float>(), flat.numel(), indices_same_device.numel(), stream());
+                                    result.ptr<float>(), flat.numel(), indices_same_device.numel(), result.stream());
             // No sync - tensor operation
         } else {
+            result = empty(indices_same_device.shape(), device_, dtype_);
             const float* src = flat.ptr<float>();
             float* dst = result.ptr<float>();
             const int* idx = indices_same_device.ptr<int>();

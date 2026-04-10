@@ -411,6 +411,8 @@ class HistogramPanel(Panel):
                 scale_min = scaling.min(1).reshape([-1])
                 scale_max = scaling.max(1).reshape([-1])
                 return scale_max / (scale_min + 1e-12)
+            if self._metric_id == "erank":
+                return self._effective_rank_from_scaling(scaling)
             return None
         except Exception:
             return None
@@ -561,6 +563,13 @@ class HistogramPanel(Panel):
             pass
         return None
 
+    @staticmethod
+    def _effective_rank_from_scaling(scaling: lf.Tensor) -> lf.Tensor:
+        energy = scaling.square()
+        probabilities = energy / (energy.sum(1, True) + 1e-12)
+        entropy = -(probabilities * (probabilities + 1e-12).log()).sum(1)
+        return entropy.exp().reshape([-1])
+
     def _histogram_bounds(self, values: lf.Tensor) -> tuple[float, float]:
         if self._metric_id == "opacity":
             return 0.0, 1.0
@@ -574,6 +583,8 @@ class HistogramPanel(Panel):
             if math.isclose(hi, lo, rel_tol=1e-6, abs_tol=1e-9):
                 return lo, lo + 1e-3
             return lo, hi
+        if self._metric_id == "erank":
+            return 1.0, 3.0
 
         lo = values.min_scalar()
         hi = values.max_scalar()

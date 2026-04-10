@@ -1216,6 +1216,10 @@
         "label": "Anisotropy",
         "description": "Ratio of largest to smallest activated scale. 1 is sphere-like; larger values are spikier."
       },
+      "erank": {
+        "label": "有效秩",
+        "description": "基于熵的已激活高斯尺度有效秩。1 表示线状，2 表示片状，3 表示球状。"
+      },
       "distance": {
         "label": "Distance",
         "description": "Distance from the current scene center."

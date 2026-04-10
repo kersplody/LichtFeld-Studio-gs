@@ -1216,6 +1216,10 @@
         "label": "Anisotropy",
         "description": "Ratio of largest to smallest activated scale. 1 is sphere-like; larger values are spikier."
       },
+      "erank": {
+        "label": "유효 랭크",
+        "description": "활성화된 가우시안 스케일의 엔트로피 기반 유효 랭크입니다. 1은 선형, 2는 판형, 3은 구형에 가깝습니다."
+      },
       "distance": {
         "label": "Distance",
         "description": "Distance from the current scene center."

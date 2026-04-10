@@ -1216,6 +1216,10 @@
         "label": "Anisotropy",
         "description": "Ratio of largest to smallest activated scale. 1 is sphere-like; larger values are spikier."
       },
+      "erank": {
+        "label": "Rango effettivo",
+        "description": "Rango effettivo basato sull'entropia delle scale gaussiane attivate. 1 è simile a una linea, 2 a una superficie, 3 a una sfera."
+      },
       "distance": {
         "label": "Distance",
         "description": "Distance from the current scene center."
