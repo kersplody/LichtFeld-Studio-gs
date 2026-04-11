@@ -524,7 +524,9 @@ namespace lfs::vis::gui {
                 vp.getTranslation(),
                 vp_size,
                 pos,
-                settings.focal_length_mm);
+                settings.focal_length_mm,
+                settings.orthographic,
+                settings.ortho_scale);
             if (!projected)
                 return {-10000.0f, -10000.0f};
             return {viewport.pos.x + projected->x,
@@ -537,7 +539,9 @@ namespace lfs::vis::gui {
                 vp.getTranslation(),
                 vp_size,
                 pos,
-                settings.focal_length_mm);
+                settings.focal_length_mm,
+                settings.orthographic,
+                settings.ortho_scale);
             if (!projected)
                 return false;
             const float margin_x = (NDC_CULL_MARGIN - 1.0f) * 0.5f * viewport.size.x;

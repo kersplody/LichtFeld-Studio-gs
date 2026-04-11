@@ -1590,6 +1590,7 @@ namespace lfs::vis::gui {
 
                     std::vector<ImVec2> screen_points;
                     if (rm->isPolygonPreviewWorldSpace()) {
+                        const auto render_settings = rm->getSettings();
                         screen_points.reserve(world_points.size());
 
                         if (!panel_ctx.viewport) {
@@ -1606,7 +1607,9 @@ namespace lfs::vis::gui {
                                 projection_viewport.camera.t,
                                 projection_viewport.windowSize,
                                 world_point,
-                                rm->getFocalLengthMm());
+                                render_settings.focal_length_mm,
+                                render_settings.orthographic,
+                                render_settings.ortho_scale);
                             if (!projected) {
                                 all_visible = false;
                                 break;
