@@ -7,7 +7,6 @@
 #include <RmlUi/Core/SystemInterface.h>
 
 #include <cstdint>
-#include <unordered_set>
 
 struct SDL_Window;
 
@@ -60,7 +59,6 @@ namespace lfs::vis::gui {
         int current_context_window_x_ = 0;
         int current_context_window_y_ = 0;
         RmlCursorRequest cursor_request_ = RmlCursorRequest::None;
-        std::unordered_set<const Rml::Context*> active_contexts_;
     };
 
 } // namespace lfs::vis::gui

@@ -15,13 +15,20 @@
 
 namespace lfs::vis::gui {
 
+    namespace {
+        bool isNonDefaultCursorRequest(const RmlCursorRequest request) {
+            return request != RmlCursorRequest::None && request != RmlCursorRequest::Arrow;
+        }
+    } // namespace
+
     RmlSystemInterface::RmlSystemInterface(SDL_Window* window) : window_(window) {}
 
     void RmlSystemInterface::beginFrame() {
         current_context_ = nullptr;
+        cursor_context_ = nullptr;
+        cursor_request_ = RmlCursorRequest::None;
         current_context_window_x_ = 0;
         current_context_window_y_ = 0;
-        active_contexts_.clear();
     }
 
     void RmlSystemInterface::trackContext(const Rml::Context* const context,
@@ -30,15 +37,12 @@ namespace lfs::vis::gui {
         current_context_ = context;
         current_context_window_x_ = window_x;
         current_context_window_y_ = window_y;
-        if (context)
-            active_contexts_.insert(context);
     }
 
     void RmlSystemInterface::releaseContext(const Rml::Context* const context) {
         if (!context)
             return;
 
-        active_contexts_.erase(context);
         if (current_context_ == context) {
             current_context_ = nullptr;
             current_context_window_x_ = 0;
@@ -51,11 +55,7 @@ namespace lfs::vis::gui {
     }
 
     RmlCursorRequest RmlSystemInterface::consumeCursorRequest() {
-        if (cursor_context_ && active_contexts_.find(cursor_context_) != active_contexts_.end())
-            return cursor_request_;
-        cursor_context_ = nullptr;
-        cursor_request_ = RmlCursorRequest::None;
-        return RmlCursorRequest::None;
+        return cursor_request_;
     }
 
     double RmlSystemInterface::GetElapsedTime() {
@@ -104,8 +104,17 @@ namespace lfs::vis::gui {
     }
 
     void RmlSystemInterface::SetMouseCursor(const Rml::String& cursor_name) {
-        cursor_context_ = current_context_;
-        cursor_request_ = mapCursorRequest(cursor_name);
+        if (!current_context_)
+            return;
+
+        const auto request = mapCursorRequest(cursor_name);
+        if (request == RmlCursorRequest::None)
+            return;
+
+        if (isNonDefaultCursorRequest(request) || !isNonDefaultCursorRequest(cursor_request_)) {
+            cursor_context_ = current_context_;
+            cursor_request_ = request;
+        }
     }
 
     void RmlSystemInterface::JoinPath(Rml::String& translated_path,

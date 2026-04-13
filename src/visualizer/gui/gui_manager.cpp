@@ -145,6 +145,45 @@ namespace lfs::vis::gui {
                 SDL_StopTextInput(window);
         }
 
+        SDL_Cursor* systemCursorForImGuiCursor(const ImGuiMouseCursor cursor) {
+            switch (cursor) {
+            case ImGuiMouseCursor_TextInput: {
+                static SDL_Cursor* const value = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_TEXT);
+                return value;
+            }
+            case ImGuiMouseCursor_Hand: {
+                static SDL_Cursor* const value = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_POINTER);
+                return value;
+            }
+            case ImGuiMouseCursor_ResizeEW: {
+                static SDL_Cursor* const value = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_EW_RESIZE);
+                return value;
+            }
+            case ImGuiMouseCursor_ResizeNS: {
+                static SDL_Cursor* const value = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_NS_RESIZE);
+                return value;
+            }
+            case ImGuiMouseCursor_ResizeNWSE: {
+                static SDL_Cursor* const value = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_NWSE_RESIZE);
+                return value;
+            }
+            case ImGuiMouseCursor_ResizeNESW: {
+                static SDL_Cursor* const value = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_NESW_RESIZE);
+                return value;
+            }
+            case ImGuiMouseCursor_ResizeAll: {
+                static SDL_Cursor* const value = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_MOVE);
+                return value;
+            }
+            case ImGuiMouseCursor_NotAllowed: {
+                static SDL_Cursor* const value = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_NOT_ALLOWED);
+                return value;
+            }
+            default:
+                return nullptr;
+            }
+        }
+
         void drawFrameTooltip(const std::string& tip, int screen_w, int screen_h) {
             if (tip.empty())
                 return;
@@ -1508,6 +1547,8 @@ namespace lfs::vis::gui {
             applyRmlCursorRequest(rmlui_manager_.consumeCursorRequest());
         apply_cursor(rml_right_panel_.getCursorRequest());
         apply_cursor(panel_layout_.getCursorRequest());
+        if (SDL_Cursor* const cursor = systemCursorForImGuiCursor(ImGui::GetMouseCursor()))
+            SDL_SetCursor(cursor);
         syncWindowTextInput(viewer_->getWindow());
 
         ImGui::Render();
