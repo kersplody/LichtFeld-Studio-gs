@@ -6,9 +6,12 @@
 
 #include <torch/torch.h>
 
+#include "core/event_bridge/command_center_bridge.hpp"
+#include "core/event_bridge/control_boundary.hpp"
 #include "core/logger.hpp"
 #include "python/gil.hpp"
 #include "python/runner.hpp"
+#include "training/control/command_api.hpp"
 
 #include <atomic>
 #include <cmath>
@@ -182,6 +185,71 @@ namespace {
         return result;
     }
 
+    std::vector<long long> runPythonHookContextSnippet(const std::string& registration_script,
+                                                       const lfs::training::HookContext& snapshot_ctx,
+                                                       const lfs::training::HookContext& callback_ctx) {
+        lfs::event::CommandCenterBridge::instance().set(&lfs::training::CommandCenter::instance());
+        lfs::training::ControlBoundary::instance().clear_all();
+        lfs::training::CommandCenter::instance().update_snapshot(
+            snapshot_ctx,
+            /*max_iterations=*/5000,
+            /*is_paused=*/false,
+            /*is_running=*/true,
+            /*stop_requested=*/false,
+            lfs::training::TrainingPhase::SafeControl);
+
+        PyObject* globals = nullptr;
+        {
+            const lfs::python::GilAcquire gil;
+            globals = PyDict_New();
+            if (!globals) {
+                throw std::runtime_error("Failed to allocate Python globals");
+            }
+
+            PyDict_SetItemString(globals, "__builtins__", PyEval_GetBuiltins());
+            PyObject* exec_result = PyRun_String(registration_script.c_str(), Py_file_input, globals, globals);
+            if (!exec_result) {
+                const auto error = consumePythonError();
+                Py_DECREF(globals);
+                throw std::runtime_error(error);
+            }
+            Py_DECREF(exec_result);
+        }
+
+        lfs::training::ControlBoundary::instance().notify(
+            lfs::training::ControlHook::PostStep,
+            callback_ctx);
+        lfs::training::ControlBoundary::instance().drain_callbacks();
+
+        std::vector<long long> result;
+        {
+            const lfs::python::GilAcquire gil;
+            auto* records_obj = PyDict_GetItemString(globals, "records");
+            if (!records_obj || !PyList_Check(records_obj) || PyList_Size(records_obj) != 1) {
+                lfs::training::ControlBoundary::instance().clear_all();
+                Py_DECREF(globals);
+                throw std::runtime_error("Hook script did not record exactly one callback invocation");
+            }
+
+            auto* record = PyList_GetItem(records_obj, 0);
+            if (!record || !PyTuple_Check(record)) {
+                lfs::training::ControlBoundary::instance().clear_all();
+                Py_DECREF(globals);
+                throw std::runtime_error("Recorded hook result is not a tuple");
+            }
+
+            result.reserve(static_cast<size_t>(PyTuple_Size(record)));
+            for (Py_ssize_t i = 0; i < PyTuple_Size(record); ++i) {
+                result.push_back(PyLong_AsLongLong(PyTuple_GetItem(record, i)));
+            }
+
+            // Drop retained Python callbacks before releasing the globals dict.
+            lfs::training::ControlBoundary::instance().clear_all();
+            Py_DECREF(globals);
+        }
+        return result;
+    }
+
     void comparePythonResultToTorch(const PythonTensorResult& custom,
                                     const torch::Tensor& reference,
                                     const std::string& context,
@@ -335,6 +403,98 @@ result_values = selected.tolist()
 
     comparePythonResultToTorch(result, torch_result, "PyTensor elementwise mask");
 }
+
+TEST_F(PythonIntegrationTest, DecoratorHookContextUsesLiveHookSnapshot) {
+    const lfs::training::HookContext stale_snapshot{
+        .iteration = 0,
+        .loss = 0.0f,
+        .num_gaussians = 0,
+        .is_refining = false,
+        .trainer = nullptr,
+    };
+    const lfs::training::HookContext live_callback{
+        .iteration = 1047,
+        .loss = 0.125f,
+        .num_gaussians = 98765,
+        .is_refining = true,
+        .trainer = nullptr,
+    };
+
+	    const auto result = runPythonHookContextSnippet(
+	        R"PY(
+	import lichtfeld as lf
+	records = []
+	
+	@lf.on_post_step
+	def _hook(hook):
+	    ctx = lf.context()
+	    records.append((
+	        hook["iter"],
+	        hook["iteration"],
+	        hook["num_splats"],
+	        hook["num_gaussians"],
+	        ctx.iteration,
+	        ctx.num_gaussians,
+	    ))
+	)PY",
+	        stale_snapshot,
+	        live_callback);
+	
+	    ASSERT_EQ(result.size(), 6u);
+	    EXPECT_EQ(result[0], live_callback.iteration);
+	    EXPECT_EQ(result[1], live_callback.iteration);
+	    EXPECT_EQ(result[2], static_cast<long long>(live_callback.num_gaussians));
+	    EXPECT_EQ(result[3], static_cast<long long>(live_callback.num_gaussians));
+	    EXPECT_EQ(result[4], live_callback.iteration);
+	    EXPECT_EQ(result[5], static_cast<long long>(live_callback.num_gaussians));
+	}
+
+TEST_F(PythonIntegrationTest, ScopedHandlerHookContextUsesLiveHookSnapshot) {
+    const lfs::training::HookContext stale_snapshot{
+        .iteration = 0,
+        .loss = 0.0f,
+        .num_gaussians = 0,
+        .is_refining = false,
+        .trainer = nullptr,
+    };
+    const lfs::training::HookContext live_callback{
+        .iteration = 1008,
+        .loss = 0.25f,
+        .num_gaussians = 54321,
+        .is_refining = false,
+        .trainer = nullptr,
+    };
+
+	    const auto result = runPythonHookContextSnippet(
+	        R"PY(
+	import lichtfeld as lf
+	records = []
+	handler = lf.ScopedHandler()
+	
+	def _hook(hook):
+	    ctx = lf.context()
+	    records.append((
+	        hook["iter"],
+	        hook["iteration"],
+	        hook["num_splats"],
+	        hook["num_gaussians"],
+	        ctx.iteration,
+	        ctx.num_gaussians,
+	    ))
+	
+	handler.on_post_step(_hook)
+	)PY",
+	        stale_snapshot,
+	        live_callback);
+	
+	    ASSERT_EQ(result.size(), 6u);
+	    EXPECT_EQ(result[0], live_callback.iteration);
+	    EXPECT_EQ(result[1], live_callback.iteration);
+	    EXPECT_EQ(result[2], static_cast<long long>(live_callback.num_gaussians));
+	    EXPECT_EQ(result[3], static_cast<long long>(live_callback.num_gaussians));
+	    EXPECT_EQ(result[4], live_callback.iteration);
+	    EXPECT_EQ(result[5], static_cast<long long>(live_callback.num_gaussians));
+	}
 
 // NOTE: Tests that actually execute Python scripts require the lichtfeld module
 // to be importable, which depends on the CommandCenter and training infrastructure.

@@ -6,6 +6,7 @@
 #include "core/data_loading_service.hpp"
 #include "core/events.hpp"
 #include "core/logger.hpp"
+#include "core/parameters.hpp"
 #include "core/path_utils.hpp"
 #include "core/scene.hpp"
 #include "gui/gui_manager.hpp"
@@ -39,17 +40,6 @@
 namespace lfs::vis::gui {
 
     using ExportFormat = lfs::core::ExportFormat;
-
-    [[nodiscard]] std::filesystem::path defaultDatasetOutputPath(
-        const std::filesystem::path& dataset_path) {
-        auto base_path = dataset_path;
-        auto ext = dataset_path.extension().string();
-        std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
-        if (ext == ".json") {
-            base_path = dataset_path.parent_path();
-        }
-        return base_path / "output";
-    }
 
     [[nodiscard]] const char* getDatasetTypeName(const std::filesystem::path& path) {
         switch (lfs::io::Loader::getDatasetType(path)) {
@@ -633,7 +623,7 @@ namespace lfs::vis::gui {
             params.init_path = std::nullopt;
             params.resume_checkpoint = std::nullopt;
             params.dataset.output_path =
-                cmd.output_path.empty() ? defaultDatasetOutputPath(cmd.path) : cmd.output_path;
+                cmd.output_path.empty() ? lfs::core::param::default_dataset_output_path(cmd.path) : cmd.output_path;
             if (!cmd.init_path.empty())
                 params.init_path = lfs::core::path_to_utf8(cmd.init_path);
             startAsyncImport(cmd.path, params);
