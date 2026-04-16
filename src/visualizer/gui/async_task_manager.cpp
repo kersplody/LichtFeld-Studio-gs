@@ -833,6 +833,17 @@ namespace lfs::vis::gui {
                         }
                         break;
                     }
+                    case ExportFormat::NUREC_USDZ: {
+                        update_progress(0.1f, "Writing USDZ");
+                        const lfs::io::NurecUsdzSaveOptions options{.output_path = path};
+                        if (auto result = lfs::io::save_nurec_usdz(*splat_data, options); result) {
+                            success = true;
+                            update_progress(1.0f, "Complete");
+                        } else {
+                            error_msg = result.error().message;
+                        }
+                        break;
+                    }
                     }
 
                 } catch (const std::exception& e) {

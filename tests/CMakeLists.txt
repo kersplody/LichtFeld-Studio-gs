@@ -197,6 +197,7 @@ set(TEST_FILES
     test_spz_format.cpp
     test_converter_usd.cpp
     test_usd_format.cpp
+    test_nurec_usdz_format.cpp
     test_unicode_paths_windows.cpp
     test_interleaved_slice_copy.cpp
     test_densification_tensor_ops.cpp

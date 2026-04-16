@@ -263,7 +263,7 @@ def force_exit() -> None:
 
 def export_scene(format: int, path: str, node_names: Sequence[str], sh_degree: int) -> None:
     """
-    Export scene nodes to file. Format: 0=PLY, 1=SOG, 2=SPZ, 3=HTML, 4=USD.
+    Export scene nodes to file. Format: 0=PLY, 1=SOG, 2=SPZ, 3=HTML, 4=USD, 5=USDZ NuRec.
     """
 
 def save_config_file(path: str) -> None:

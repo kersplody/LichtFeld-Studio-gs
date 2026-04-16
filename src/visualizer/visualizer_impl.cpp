@@ -308,6 +308,7 @@ namespace lfs::vis {
                                : fmt == core::ExportFormat::SPZ         ? "SPZ"
                                : fmt == core::ExportFormat::HTML_VIEWER ? "HTML"
                                : fmt == core::ExportFormat::USD         ? "USD"
+                               : fmt == core::ExportFormat::NUREC_USDZ ? "USDZ"
                                                                         : "file";
                 return state;
             },
