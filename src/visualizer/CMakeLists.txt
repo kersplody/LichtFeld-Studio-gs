@@ -128,6 +128,7 @@ add_library(lfs_visualizer ${LFS_VIS_LIB_TYPE}
         # Sequencer (camera animation)
         sequencer/sequencer_controller.cpp
         sequencer/rml_sequencer_panel.cpp
+        sequencer/rml_sequencer_panel_timeline.cpp
 
         # Operator system (Blender-style)
         operator/operator_context.cpp
