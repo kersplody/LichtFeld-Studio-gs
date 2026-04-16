@@ -857,6 +857,7 @@ namespace lfs::vis {
             RenderingManager::RenderContext ctx{
                 .viewport = viewport_,
                 .settings = rendering_manager_->getSettings(),
+                .logical_screen_size = window_manager_->getWindowSize(),
                 .viewport_region = nullptr,
                 .scene_manager = scene_manager_.get()};
             rendering_manager_->renderFrame(ctx);
@@ -1045,6 +1046,7 @@ namespace lfs::vis {
         RenderingManager::RenderContext context{
             .viewport = viewport_,
             .settings = rendering_manager_->getSettings(),
+            .logical_screen_size = window_manager_->getWindowSize(),
             .viewport_region = has_viewport_region ? &viewport_region : nullptr,
             .scene_manager = scene_manager_.get()};
 

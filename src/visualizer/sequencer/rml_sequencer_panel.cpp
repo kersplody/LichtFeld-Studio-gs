@@ -16,11 +16,13 @@
 #include "gui/rmlui/rml_tooltip.hpp"
 #include "gui/rmlui/rmlui_manager.hpp"
 #include "gui/rmlui/rmlui_render_interface.hpp"
+#include "gui/ui_widgets.hpp"
 #include "gui/rmlui/sdl_rml_key_mapping.hpp"
 #include "gui/string_keys.hpp"
 #include "internal/resource_paths.hpp"
 #include "io/video/video_export_options.hpp"
 #include "rendering/render_constants.hpp"
+#include "sequencer/interpolation.hpp"
 #include "sequencer/timeline_view_math.hpp"
 #include "theme/theme.hpp"
 
@@ -32,6 +34,8 @@
 #include <cstdio>
 #include <filesystem>
 #include <format>
+#include <imgui.h>
+#include <imgui_impl_opengl3.h>
 
 namespace lfs::vis {
 
@@ -40,6 +44,7 @@ namespace lfs::vis {
         constexpr float DOUBLE_CLICK_TIME = 0.3f;
         constexpr float DRAG_THRESHOLD_PX = 3.0f;
         constexpr float PLAYHEAD_HIT_RADIUS = 6.0f;
+        constexpr float PLAYHEAD_HANDLE_WIDTH = 8.0f;
 
         constexpr std::array<float, 5> SPEED_PRESETS = {0.25f, 0.5f, 1.0f, 2.0f, 4.0f};
 
@@ -88,6 +93,19 @@ namespace lfs::vis {
                 signature *= 1099511628211ull;
             }
             return signature;
+        }
+
+        [[nodiscard]] float clampCenteredSpan(const float center,
+                                              const float extent,
+                                              const float span) {
+            if (extent <= 0.0f)
+                return 0.0f;
+
+            const float half_span = std::max(span * 0.5f, 0.0f);
+            if (extent <= span)
+                return extent * 0.5f;
+
+            return std::clamp(center, half_span, extent - half_span);
         }
 
         void forwardFocusedKeyboardInput(Rml::Context* const context,
@@ -247,7 +265,62 @@ namespace lfs::vis {
     }
 
     void RmlSequencerPanel::destroyGLResources() {
+        clearPendingComposite();
+        unregisterFilmStripSources();
+        clearFilmThumbPool();
+        if (el_film_strip_gaps_)
+            el_film_strip_gaps_->SetInnerRML("");
+        if (el_film_strip_markers_)
+            el_film_strip_markers_->SetInnerRML("");
+        if (el_film_strip_dividers_)
+            el_film_strip_dividers_->SetInnerRML("");
+        if (el_film_strip_sprockets_top_)
+            el_film_strip_sprockets_top_->SetInnerRML("");
+        if (el_film_strip_sprockets_bottom_)
+            el_film_strip_sprockets_bottom_->SetInnerRML("");
         fbo_.destroy();
+    }
+
+    void RmlSequencerPanel::clearPendingComposite() {
+        pending_foreground_composite_ = false;
+        pending_composite_x_ = 0.0f;
+        pending_composite_y_ = 0.0f;
+        pending_composite_width_ = 0.0f;
+        pending_composite_height_ = 0.0f;
+    }
+
+    void RmlSequencerPanel::compositeToScreen(const int screen_w, const int screen_h) {
+        if (!pending_foreground_composite_ || !fbo_.valid() || screen_w <= 0 || screen_h <= 0) {
+            clearPendingComposite();
+            return;
+        }
+
+        ImDrawList draw_list(ImGui::GetDrawListSharedData());
+        draw_list._ResetForNewFrame();
+        draw_list.PushTextureID(ImGui::GetIO().Fonts->TexID);
+        draw_list.PushClipRectFullScreen();
+        gui::widgets::DrawFloatingWindowShadow(
+            &draw_list,
+            {pending_composite_x_, pending_composite_y_},
+            {pending_composite_width_, pending_composite_height_},
+            theme().sizes.window_rounding);
+        draw_list.PopClipRect();
+
+        if (!draw_list.CmdBuffer.empty() && !draw_list.VtxBuffer.empty()) {
+            ImDrawData draw_data{};
+            draw_data.DisplayPos = ImVec2(0.0f, 0.0f);
+            draw_data.DisplaySize = ImVec2(static_cast<float>(screen_w),
+                                           static_cast<float>(screen_h));
+            draw_data.FramebufferScale = ImGui::GetIO().DisplayFramebufferScale;
+            draw_data.Valid = true;
+            draw_data.AddDrawList(&draw_list);
+            ImGui_ImplOpenGL3_RenderDrawData(&draw_data);
+        }
+
+        fbo_.blitToScreen(pending_composite_x_, pending_composite_y_,
+                          pending_composite_width_, pending_composite_height_,
+                          screen_w, screen_h);
+        clearPendingComposite();
     }
 
     void RmlSequencerPanel::initContext(const int width, const int height) {
@@ -287,6 +360,25 @@ namespace lfs::vis {
         el_play_icon_ = document_->GetElementById("play-icon");
         el_btn_loop_ = document_->GetElementById("btn-loop");
         el_timeline_ = document_->GetElementById("timeline");
+        el_header_ = document_->GetElementById("header");
+        el_easing_stripe_ = document_->GetElementById("easing-stripe");
+        el_easing_segments_ = document_->GetElementById("easing-segments");
+        el_easing_curves_ = document_->GetElementById("easing-curves");
+        el_easing_indicators_ = document_->GetElementById("easing-indicators");
+        el_film_strip_panel_ = document_->GetElementById("film-strip-panel");
+        el_film_strip_groove_ = document_->GetElementById("film-strip-groove");
+        el_film_strip_gaps_ = document_->GetElementById("film-strip-gaps");
+        el_film_strip_thumbs_ = document_->GetElementById("film-strip-thumbs");
+        el_film_strip_markers_ = document_->GetElementById("film-strip-markers");
+        el_film_strip_dividers_ = document_->GetElementById("film-strip-dividers");
+        el_film_strip_sprockets_top_ = document_->GetElementById("film-strip-sprockets-top");
+        el_film_strip_sprockets_bottom_ = document_->GetElementById("film-strip-sprockets-bottom");
+        el_panel_guides_ = document_->GetElementById("panel-guides");
+        el_guide_playhead_ = document_->GetElementById("guide-playhead");
+        el_guide_selected_ = document_->GetElementById("guide-selected");
+        el_guide_hovered_ = document_->GetElementById("guide-hovered");
+        el_guide_strip_hover_ = document_->GetElementById("guide-strip-hover");
+        el_timeline_tooltip_ = document_->GetElementById("timeline-tooltip");
 
         el_btn_camera_path_ = document_->GetElementById("btn-camera-path");
         el_btn_snap_ = document_->GetElementById("btn-snap");
@@ -313,7 +405,16 @@ namespace lfs::vis {
 
         elements_cached_ = el_ruler_ && el_keyframes_ && el_playhead_ &&
                            el_current_time_ && el_duration_ && el_play_icon_ &&
-                           el_btn_loop_ && el_timeline_;
+                           el_btn_loop_ && el_timeline_ && el_header_ &&
+                           el_easing_stripe_ && el_easing_segments_ &&
+                           el_easing_curves_ && el_easing_indicators_ &&
+                           el_film_strip_panel_ && el_film_strip_groove_ &&
+                           el_film_strip_gaps_ && el_film_strip_thumbs_ &&
+                           el_film_strip_markers_ && el_film_strip_dividers_ &&
+                           el_film_strip_sprockets_top_ && el_film_strip_sprockets_bottom_ &&
+                           el_panel_guides_ && el_guide_playhead_ &&
+                           el_guide_selected_ && el_guide_hovered_ &&
+                           el_guide_strip_hover_ && el_timeline_tooltip_;
         if (!elements_cached_) {
             LOG_ERROR("RmlUI sequencer: missing DOM elements");
             return;
@@ -348,12 +449,12 @@ namespace lfs::vis {
     std::string RmlSequencerPanel::generateThemeRCSS(const lfs::vis::Theme& t) const {
         const auto& p = t.palette;
 
-        const auto surface_alpha = colorToRmlAlpha(p.surface, 0.95f);
+        const auto surface_alpha = colorToRml(p.surface);
         const auto border = colorToRmlAlpha(p.border, 0.4f);
         const auto text = colorToRml(p.text);
         const auto text_dim = colorToRml(p.text_dim);
         const auto text_dim_half = colorToRmlAlpha(p.text_dim, 0.5f);
-        const auto bg_alpha = colorToRmlAlpha(p.background, 0.8f);
+        const auto bg_alpha = colorToRml(p.background);
         const auto border_dim = colorToRmlAlpha(p.border, 0.3f);
         const auto error = colorToRml(p.error);
         const auto primary_active = colorToRmlAlpha(p.primary, 0.20f);
@@ -366,13 +467,36 @@ namespace lfs::vis {
         const auto primary_export_border = colorToRmlAlpha(p.primary, 0.40f);
         const auto surface_bright_alpha = colorToRmlAlpha(p.surface_bright, 0.30f);
         const auto primary_color = colorToRml(p.primary);
+        const auto primary_tint = colorToRmlAlpha(p.primary, 0.18f);
+        const auto primary_fill = colorToRmlAlpha(p.primary, 0.25f);
+        const auto primary_edge = colorToRmlAlpha(p.primary, 0.90f);
+        const auto primary_outline = colorToRmlAlpha(p.primary, 0.65f);
+        const auto secondary_color = colorToRml(p.secondary);
+        const auto secondary_tint = colorToRmlAlpha(p.secondary, 0.14f);
+        const auto secondary_fill = colorToRmlAlpha(p.secondary, 0.25f);
+        const auto secondary_edge = colorToRmlAlpha(p.secondary, 0.70f);
+        const auto secondary_outline = colorToRmlAlpha(p.secondary, 0.50f);
+        const auto guide_hover = colorToRmlAlpha(p.secondary, 0.75f);
+        const auto guide_strip_hover = colorToRmlAlpha(p.text_dim, 0.55f);
+        const auto guide_selected = colorToRmlAlpha(p.primary, 0.85f);
+        const auto guide_playhead = colorToRml(p.error);
+        const auto film_strip_groove = colorToRml(p.background);
+        const auto film_strip_gap = colorToRmlAlpha(p.surface, 0.30f);
+        const auto film_strip_gap_stripe = colorToRmlAlpha(p.border, 0.18f);
+        const auto film_thumb_midline_shadow = "rgba(0, 0, 0, 70)";
+        const auto film_marker_shadow = "rgba(0, 0, 0, 78)";
+        const auto divider_color = colorToRmlAlpha(p.text_dim, 0.15f);
+        const auto sprocket_color = colorToRmlAlpha(p.text_dim, 0.30f);
+        const auto tooltip_surface = colorToRmlAlpha(p.surface, 0.96f);
+        const auto tooltip_border = colorToRmlAlpha(p.border, 0.75f);
+        const auto tooltip_text_dim = colorToRmlAlpha(p.text_dim, 0.95f);
         const int rounding = static_cast<int>(t.sizes.window_rounding);
 
         const std::string radius_str = film_strip_attached_
                                            ? std::format("{}dp {}dp 0dp 0dp", rounding, rounding)
                                            : std::format("{}dp", rounding);
 
-        return std::format(
+        std::string css = std::format(
             "#panel {{ background-color: {}; border-width: 1dp; border-color: {}; "
             "border-radius: {}; }}\n"
             ".transport-icon {{ image-color: {}; }}\n"
@@ -384,7 +508,7 @@ namespace lfs::vis {
             "#playhead-handle {{ background-color: {}; }}\n"
             "#current-time {{ color: {}; }}\n"
             "#duration {{ color: {}; }}\n"
-            "#easing-stripe {{ border-top: 1dp {}; }}\n"
+            "#easing-stripe {{ background-color: {}; border-top: 1dp {}; }}\n"
             "#transport-row {{ border-bottom: 1dp {}; }}\n"
             ".transport-sep {{ background-color: {}; }}\n"
             ".transport-label {{ color: {}; }}\n"
@@ -415,7 +539,7 @@ namespace lfs::vis {
             error,
             text,
             text_dim,
-            border_dim,
+            surface_alpha, border_dim,
             border_dim,
             border_dim,
             text,
@@ -436,6 +560,88 @@ namespace lfs::vis {
             error_btn, error_btn,
             error,
             text_dim_half);
+
+        css += std::format(
+            "#film-strip-panel {{ background-color: {}; border-left: 1dp {}; border-right: 1dp {}; border-bottom: 1dp {}; border-radius: 0dp 0dp {}dp {}dp; }}\n"
+            "#film-strip-groove {{ background-color: {}; }}\n"
+            ".film-strip-gap {{ background-color: {}; }}\n"
+            ".film-strip-gap-stripe {{ background-color: {}; }}\n"
+            ".film-strip-divider {{ background-color: {}; }}\n"
+            ".film-strip-sprocket {{ background-color: {}; }}\n"
+            ".film-thumb-tint.hovered-keyframe {{ background-color: {}; }}\n"
+            ".film-thumb-tint.selected {{ background-color: {}; }}\n"
+            ".film-thumb.contains-hovered-keyframe .film-thumb-edge {{ background-color: {}; }}\n"
+            ".film-thumb.contains-selected .film-thumb-edge {{ background-color: {}; }}\n"
+            ".film-thumb.hovered .film-thumb-outline {{ border-color: {}; }}\n"
+            ".film-thumb.contains-hovered-keyframe .film-thumb-outline {{ border-color: {}; }}\n"
+            ".film-thumb.contains-selected .film-thumb-outline {{ border-color: {}; }}\n"
+            ".film-thumb-midline.shadow {{ background-color: {}; }}\n"
+            ".film-thumb-midline.main {{ background-color: {}; }}\n"
+            ".film-thumb.contains-hovered-keyframe .film-thumb-midline.main {{ background-color: {}; }}\n"
+            ".film-thumb.contains-selected .film-thumb-midline.main {{ background-color: {}; }}\n"
+            ".film-thumb.hovered .film-thumb-midline.main {{ background-color: {}; }}\n"
+            ".film-strip-marker-line.shadow {{ background-color: {}; }}\n"
+            ".film-strip-marker-line.main {{ background-color: {}; }}\n"
+            ".film-strip-marker.hovered .film-strip-marker-line.main, .film-strip-marker.hovered .film-strip-marker-cap {{ background-color: {}; }}\n"
+            ".film-strip-marker.selected .film-strip-marker-line.main, .film-strip-marker.selected .film-strip-marker-cap {{ background-color: {}; }}\n"
+            ".film-strip-marker-cap {{ background-color: {}; }}\n"
+            ".easing-segment.primary {{ background-color: {}; }}\n"
+            ".easing-segment.secondary {{ background-color: {}; }}\n"
+            ".easing-curve-segment {{ background-color: {}; }}\n"
+            ".easing-dot.primary, .easing-indicator.primary.ease-in-out {{ background-color: {}; }}\n"
+            ".easing-dot.secondary, .easing-indicator.secondary.ease-in-out {{ background-color: {}; }}\n"
+            ".easing-indicator.primary.ease-in {{ border-bottom-color: {}; }}\n"
+            ".easing-indicator.secondary.ease-in {{ border-bottom-color: {}; }}\n"
+            ".easing-indicator.primary.ease-out {{ border-top-color: {}; }}\n"
+            ".easing-indicator.secondary.ease-out {{ border-top-color: {}; }}\n"
+            ".timeline-guide.hovered {{ background-color: {}; }}\n"
+            ".timeline-guide.selected {{ background-color: {}; }}\n"
+            ".timeline-guide.playhead {{ background-color: {}; }}\n"
+            ".timeline-guide.strip-hover {{ background-color: {}; }}\n"
+            "#timeline-tooltip {{ background-color: {}; border-color: {}; }}\n"
+            ".timeline-tooltip-line.title {{ color: {}; }}\n"
+            ".timeline-tooltip-line {{ color: {}; }}\n",
+            surface_alpha, border, border, border, rounding, rounding,
+            film_strip_groove,
+            film_strip_gap,
+            film_strip_gap_stripe,
+            divider_color,
+            sprocket_color,
+            secondary_tint,
+            primary_tint,
+            secondary_edge,
+            primary_edge,
+            text,
+            secondary_outline,
+            primary_outline,
+            film_thumb_midline_shadow,
+            text_dim_half,
+            secondary_color,
+            primary_color,
+            text,
+            film_marker_shadow,
+            text_dim_half,
+            secondary_color,
+            primary_color,
+            text_dim_half,
+            primary_fill,
+            secondary_fill,
+            colorToRmlAlpha(p.primary, 0.50f),
+            primary_color,
+            secondary_color,
+            primary_color,
+            secondary_color,
+            primary_color,
+            secondary_color,
+            guide_hover,
+            guide_selected,
+            guide_playhead,
+            guide_strip_hover,
+            tooltip_surface, tooltip_border,
+            text,
+            tooltip_text_dim);
+
+        return css;
     }
 
     void RmlSequencerPanel::syncTheme() {
@@ -485,7 +691,10 @@ namespace lfs::vis {
         if (tl_width <= 0.0f)
             return;
 
-        const float x = timeToX(controller_.playhead(), 0.0f, tl_width);
+        const float x = clampCenteredSpan(
+            timeToX(controller_.playhead(), 0.0f, tl_width),
+            tl_width,
+            PLAYHEAD_HANDLE_WIDTH * cached_dp_ratio_);
         el_playhead_->SetProperty("left", std::format("{:.1f}px", x));
     }
 
@@ -660,6 +869,531 @@ namespace lfs::vis {
         el_ruler_->SetInnerRML(html);
     }
 
+    void RmlSequencerPanel::rebuildEasingStripe(const float timeline_x, const float timeline_width) {
+        if (!elements_cached_)
+            return;
+
+        const auto& keyframes = controller_.timeline().keyframes();
+        if (timeline_width <= 0.0f || keyframes.empty()) {
+            el_easing_segments_->SetInnerRML("");
+            el_easing_curves_->SetInnerRML("");
+            el_easing_indicators_->SetInnerRML("");
+            return;
+        }
+
+        constexpr int CURVE_SAMPLES = 20;
+        const float stripe_h = EASING_STRIPE_HEIGHT * cached_dp_ratio_;
+        const float y_center = stripe_h * 0.5f;
+        const float amplitude = stripe_h * 0.35f;
+        const float display_end = getDisplayEndTime();
+        const float pan = pan_offset_;
+
+        const auto localTimeToX = [&](const float time) -> float {
+            return sequencer_ui::timeToScreenX(time, timeline_x, timeline_width, display_end, pan) - timeline_x;
+        };
+
+        std::string segments_html;
+        std::string curves_html;
+        std::string indicators_html;
+        segments_html.reserve(512);
+        curves_html.reserve(4096);
+        indicators_html.reserve(1024);
+
+        for (size_t i = 0; i + 1 < keyframes.size(); ++i) {
+            const float x0 = localTimeToX(keyframes[i].time);
+            const float x1 = localTimeToX(keyframes[i + 1].time);
+            if (x1 <= x0)
+                continue;
+
+            segments_html += std::format(
+                "<div class=\"easing-segment {}\" style=\"left:{:.1f}px;width:{:.1f}px;\"></div>",
+                (i % 2 == 0) ? "primary" : "secondary",
+                x0, x1 - x0);
+
+            const auto easing = keyframes[i].easing;
+            if (easing == sequencer::EasingType::LINEAR) {
+                const float len = x1 - x0;
+                curves_html += std::format(
+                    "<div class=\"easing-curve-segment\" style=\"left:{:.1f}px;top:{:.1f}px;width:{:.1f}px;transform:rotate(0deg);\"></div>",
+                    x0, y_center, len);
+                continue;
+            }
+
+            for (int s = 0; s < CURVE_SAMPLES; ++s) {
+                const float t0 = static_cast<float>(s) / static_cast<float>(CURVE_SAMPLES);
+                const float t1 = static_cast<float>(s + 1) / static_cast<float>(CURVE_SAMPLES);
+                const float eased0 = sequencer::applyEasing(t0, easing);
+                const float eased1 = sequencer::applyEasing(t1, easing);
+                const float px0 = x0 + t0 * (x1 - x0);
+                const float px1 = x0 + t1 * (x1 - x0);
+                const float py0 = y_center - (eased0 - t0) * amplitude;
+                const float py1 = y_center - (eased1 - t1) * amplitude;
+                const float dx = px1 - px0;
+                const float dy = py1 - py0;
+                const float len = std::sqrt(dx * dx + dy * dy);
+                if (len < 0.25f)
+                    continue;
+
+                const float angle_deg = std::atan2(dy, dx) * 57.2957795f;
+                curves_html += std::format(
+                    "<div class=\"easing-curve-segment\" style=\"left:{:.1f}px;top:{:.1f}px;width:{:.1f}px;transform:rotate({:.2f}deg);\"></div>",
+                    px0, py0, len, angle_deg);
+            }
+        }
+
+        for (size_t i = 0; i < keyframes.size(); ++i) {
+            const float kx = localTimeToX(keyframes[i].time);
+            const char* tone = (i % 2 == 0) ? "primary" : "secondary";
+            indicators_html += std::format(
+                "<div class=\"easing-dot {}\" style=\"left:{:.1f}px;top:{:.1f}px;\"></div>",
+                tone, kx, y_center);
+
+            const auto easing = keyframes[i].easing;
+            if (easing == sequencer::EasingType::LINEAR)
+                continue;
+
+            const float iy = y_center - stripe_h * 0.3f;
+            const char* easing_class = "";
+            switch (easing) {
+            case sequencer::EasingType::EASE_IN: easing_class = "ease-in"; break;
+            case sequencer::EasingType::EASE_OUT: easing_class = "ease-out"; break;
+            case sequencer::EasingType::EASE_IN_OUT: easing_class = "ease-in-out"; break;
+            default: break;
+            }
+
+            indicators_html += std::format(
+                "<div class=\"easing-indicator {} {}\" style=\"left:{:.1f}px;top:{:.1f}px;\"></div>",
+                easing_class, tone, kx, iy);
+        }
+
+        el_easing_segments_->SetInnerRML(segments_html);
+        el_easing_curves_->SetInnerRML(curves_html);
+        el_easing_indicators_->SetInnerRML(indicators_html);
+    }
+
+    void RmlSequencerPanel::ensureFilmThumbPool(const size_t count) {
+        if (!elements_cached_ || !el_film_strip_thumbs_)
+            return;
+
+        while (film_thumb_elements_.size() < count) {
+            auto thumb = document_->CreateElement("div");
+            auto* thumb_raw = thumb.get();
+            thumb_raw->SetClassNames("film-thumb");
+
+            auto image = document_->CreateElement("img");
+            image->SetClassNames("film-thumb-image");
+            thumb_raw->AppendChild(std::move(image));
+
+            auto tint_hover = document_->CreateElement("div");
+            tint_hover->SetClassNames("film-thumb-tint hovered-keyframe");
+            thumb_raw->AppendChild(std::move(tint_hover));
+
+            auto tint_selected = document_->CreateElement("div");
+            tint_selected->SetClassNames("film-thumb-tint selected");
+            thumb_raw->AppendChild(std::move(tint_selected));
+
+            auto edge_top = document_->CreateElement("div");
+            edge_top->SetClassNames("film-thumb-edge top");
+            thumb_raw->AppendChild(std::move(edge_top));
+
+            auto edge_bottom = document_->CreateElement("div");
+            edge_bottom->SetClassNames("film-thumb-edge bottom");
+            thumb_raw->AppendChild(std::move(edge_bottom));
+
+            auto outline = document_->CreateElement("div");
+            outline->SetClassNames("film-thumb-outline");
+            thumb_raw->AppendChild(std::move(outline));
+
+            auto mid_shadow = document_->CreateElement("div");
+            mid_shadow->SetClassNames("film-thumb-midline shadow");
+            thumb_raw->AppendChild(std::move(mid_shadow));
+
+            auto mid_main = document_->CreateElement("div");
+            mid_main->SetClassNames("film-thumb-midline main");
+            thumb_raw->AppendChild(std::move(mid_main));
+
+            el_film_strip_thumbs_->AppendChild(std::move(thumb));
+            film_thumb_elements_.push_back(thumb_raw);
+        }
+    }
+
+    void RmlSequencerPanel::clearFilmThumbPool() {
+        if (!el_film_strip_thumbs_)
+            return;
+
+        while (!film_thumb_elements_.empty()) {
+            auto* el = film_thumb_elements_.back();
+            if (el && el->GetNumChildren() > 0) {
+                if (auto* image = el->GetChild(0))
+                    image->SetAttribute("src", "");
+            }
+            el_film_strip_thumbs_->RemoveChild(el);
+            film_thumb_elements_.pop_back();
+        }
+    }
+
+    void RmlSequencerPanel::unregisterFilmStripSources() {
+        auto* render = rml_manager_ ? rml_manager_->getRenderInterface() : nullptr;
+        if (!render) {
+            registered_film_strip_sources_.clear();
+            return;
+        }
+
+        for (const auto& source : registered_film_strip_sources_)
+            render->unregister_external_texture(source);
+        registered_film_strip_sources_.clear();
+    }
+
+    void RmlSequencerPanel::rebuildFilmStripDecor(const float timeline_width) {
+        if (!elements_cached_)
+            return;
+
+        const float thumb_display_h = gui::FilmStripRenderer::STRIP_HEIGHT -
+                                      gui::FilmStripRenderer::THUMB_PADDING * 2.0f;
+        const float base_thumb_w = thumb_display_h * (static_cast<float>(gui::FilmStripRenderer::THUMB_WIDTH) /
+                                                      static_cast<float>(gui::FilmStripRenderer::THUMB_HEIGHT));
+        const int num_thumbs = sequencer_ui::thumbnailCount(timeline_width, base_thumb_w, zoom_level_);
+        const float actual_thumb_w = num_thumbs > 0 ? timeline_width / static_cast<float>(num_thumbs) : 0.0f;
+        const float groove_w = timeline_width + gui::FilmStripRenderer::THUMB_PADDING * 2.0f;
+
+        std::string divider_html;
+        divider_html.reserve(256);
+        for (int i = 1; i < num_thumbs; ++i) {
+            divider_html += std::format(
+                "<div class=\"film-strip-divider\" style=\"left:{:.1f}px;\"></div>",
+                gui::FilmStripRenderer::THUMB_PADDING + actual_thumb_w * static_cast<float>(i));
+        }
+        el_film_strip_dividers_->SetInnerRML(divider_html);
+
+        std::string sprocket_top_html;
+        std::string sprocket_bottom_html;
+        const float sprocket_start = gui::FilmStripRenderer::SPROCKET_SPACING * 0.5f;
+        const int sprocket_count = static_cast<int>(groove_w / gui::FilmStripRenderer::SPROCKET_SPACING);
+        sprocket_top_html.reserve(static_cast<size_t>(sprocket_count) * 48);
+        sprocket_bottom_html.reserve(static_cast<size_t>(sprocket_count) * 48);
+        for (int i = 0; i < sprocket_count; ++i) {
+            const float cx = sprocket_start + static_cast<float>(i) * gui::FilmStripRenderer::SPROCKET_SPACING;
+            const float sx = cx - gui::FilmStripRenderer::SPROCKET_W * 0.5f;
+            sprocket_top_html += std::format(
+                "<div class=\"film-strip-sprocket top\" style=\"left:{:.1f}px;\"></div>", sx);
+            sprocket_bottom_html += std::format(
+                "<div class=\"film-strip-sprocket bottom\" style=\"left:{:.1f}px;\"></div>", sx);
+        }
+        el_film_strip_sprockets_top_->SetInnerRML(sprocket_top_html);
+        el_film_strip_sprockets_bottom_->SetInnerRML(sprocket_bottom_html);
+    }
+
+    void RmlSequencerPanel::rebuildFilmStrip(float timeline_x, const float timeline_width,
+                                             const float strip_y, const PanelInputState& input,
+                                             RenderingManager* rm, SceneManager* sm,
+                                             gui::FilmStripRenderer& film_strip) {
+        if (!elements_cached_)
+            return;
+
+        if (!film_strip_attached_) {
+            if (film_strip_scrubbing_) {
+                film_strip_scrubbing_ = false;
+                controller_.endScrub();
+            }
+            unregisterFilmStripSources();
+            clearFilmThumbPool();
+            el_film_strip_gaps_->SetInnerRML("");
+            el_film_strip_markers_->SetInnerRML("");
+            el_film_strip_dividers_->SetInnerRML("");
+            el_film_strip_sprockets_top_->SetInnerRML("");
+            el_film_strip_sprockets_bottom_->SetInnerRML("");
+            updateTimelineTooltip(film_strip, input);
+            return;
+        }
+
+        std::optional<float> selected_keyframe_time;
+        if (const auto selected = controller_.selectedKeyframe(); selected.has_value()) {
+            if (const auto* const keyframe = controller_.timeline().getKeyframe(*selected))
+                selected_keyframe_time = keyframe->time;
+        }
+
+        std::optional<float> hovered_keyframe_time;
+        if (const auto hovered_id = hoveredKeyframeId(); hovered_id.has_value()) {
+            if (const auto* const keyframe = controller_.timeline().getKeyframeById(*hovered_id))
+                hovered_keyframe_time = keyframe->time;
+        }
+
+        gui::FilmStripRenderer::RenderOptions options;
+        options.panel_x = cached_panel_x_;
+        options.panel_width = cached_panel_width_;
+        options.timeline_x = timeline_x;
+        options.timeline_width = timeline_width;
+        options.strip_y = strip_y;
+        options.mouse_x = input.mouse_x;
+        options.mouse_y = input.mouse_y;
+        options.zoom_level = zoom_level_;
+        options.pan_offset = pan_offset_;
+        options.display_end_time = getDisplayEndTime();
+        options.selected_keyframe_id = controller_.selectedKeyframeId();
+        options.hovered_keyframe_id = hoveredKeyframeId();
+        options.selected_keyframe_time = selected_keyframe_time;
+        options.hovered_keyframe_time = hovered_keyframe_time;
+        film_strip.render(controller_, rm, sm, options);
+
+        handleFilmStripInteraction(timeline_x, timeline_width, input, film_strip);
+        rebuildFilmStripDecor(timeline_width);
+
+        const float groove_origin_x = timeline_x - gui::FilmStripRenderer::THUMB_PADDING;
+
+        std::string gaps_html;
+        if (controller_.timeline().size() >= 2) {
+            const float visible_left_x = gui::FilmStripRenderer::THUMB_PADDING;
+            const float visible_right_x = gui::FilmStripRenderer::THUMB_PADDING + timeline_width;
+            const float anim_start_x = std::clamp(
+                timeToX(controller_.timeline().startTime(), timeline_x, timeline_width) - timeline_x +
+                    gui::FilmStripRenderer::THUMB_PADDING,
+                visible_left_x, visible_right_x);
+            const float anim_end_x = std::clamp(
+                timeToX(controller_.timeline().endTime(), timeline_x, timeline_width) - timeline_x +
+                    gui::FilmStripRenderer::THUMB_PADDING,
+                visible_left_x, visible_right_x);
+
+            const auto append_gap_region = [&](const float x_min, const float x_max) {
+                if (x_max <= x_min)
+                    return;
+
+                gaps_html += std::format(
+                    "<div class=\"film-strip-gap\" style=\"left:{:.1f}px;width:{:.1f}px;\">",
+                    x_min, x_max - x_min);
+                const float stripe_span = gui::FilmStripRenderer::STRIP_HEIGHT -
+                                          gui::FilmStripRenderer::THUMB_PADDING * 2.0f;
+                for (float stripe_x = -stripe_span; stripe_x < (x_max - x_min) + stripe_span;
+                     stripe_x += 10.0f) {
+                    gaps_html += std::format(
+                        "<div class=\"film-strip-gap-stripe\" style=\"left:{:.1f}px;top:{:.1f}px;height:{:.1f}px;transform:rotate(45deg);\"></div>",
+                        stripe_x, stripe_span, stripe_span * 1.4142f);
+                }
+                gaps_html += "</div>";
+            };
+
+            if (anim_start_x > visible_left_x)
+                append_gap_region(visible_left_x, anim_start_x);
+            if (anim_end_x < visible_right_x)
+                append_gap_region(anim_end_x, visible_right_x);
+        }
+        el_film_strip_gaps_->SetInnerRML(gaps_html);
+
+        ensureFilmThumbPool(film_strip.thumbs().size());
+        auto* render = rml_manager_ ? rml_manager_->getRenderInterface() : nullptr;
+        if (!render)
+            unregisterFilmStripSources();
+        std::set<std::string> active_sources;
+        for (size_t i = 0; i < film_thumb_elements_.size(); ++i) {
+            auto* thumb_el = film_thumb_elements_[i];
+            auto* image_el = thumb_el && thumb_el->GetNumChildren() > 0 ? thumb_el->GetChild(0) : nullptr;
+            if (!thumb_el || !image_el)
+                continue;
+
+            if (i >= film_strip.thumbs().size()) {
+                thumb_el->SetProperty("display", "none");
+                image_el->SetAttribute("src", "");
+                continue;
+            }
+
+            const auto& thumb = film_strip.thumbs()[i];
+            const unsigned int texture_id = film_strip.textureIdForSlot(thumb.slot_idx);
+            if (texture_id == 0) {
+                thumb_el->SetProperty("display", "none");
+                image_el->SetAttribute("src", "");
+                continue;
+            }
+
+            const std::string source =
+                std::format("sequencer-film-slot://{}-{}", thumb.slot_idx, texture_id);
+            if (render)
+                render->register_external_texture(source, texture_id,
+                                                  gui::FilmStripRenderer::THUMB_WIDTH,
+                                                  gui::FilmStripRenderer::THUMB_HEIGHT);
+            active_sources.insert(source);
+
+            thumb_el->SetProperty("display", "block");
+            thumb_el->SetProperty("left", std::format("{:.1f}px", thumb.screen_x - groove_origin_x));
+            thumb_el->SetProperty("width", std::format("{:.1f}px", thumb.screen_width));
+            thumb_el->SetClassNames("film-thumb");
+            thumb_el->SetClass("hovered", thumb.hovered);
+            thumb_el->SetClass("contains-selected", thumb.contains_selected);
+            thumb_el->SetClass("contains-hovered-keyframe", thumb.contains_hovered_keyframe);
+            thumb_el->SetClass("stale", thumb.stale);
+
+            const auto current_source = image_el->GetAttribute<Rml::String>("src", "");
+            if (current_source != source)
+                image_el->SetAttribute("src", source);
+        }
+
+        for (auto it = registered_film_strip_sources_.begin(); it != registered_film_strip_sources_.end();) {
+            if (!active_sources.contains(*it) && render)
+                render->unregister_external_texture(*it);
+            if (!active_sources.contains(*it))
+                it = registered_film_strip_sources_.erase(it);
+            else
+                ++it;
+        }
+        registered_film_strip_sources_.insert(active_sources.begin(), active_sources.end());
+
+        std::string markers_html;
+        markers_html.reserve(film_strip.markers().size() * 196);
+        for (const auto& marker : film_strip.markers()) {
+            markers_html += std::format(
+                "<div class=\"film-strip-marker{}{}\" style=\"left:{:.1f}px;\">"
+                "<div class=\"film-strip-marker-line shadow\"></div>"
+                "<div class=\"film-strip-marker-line main\"></div>"
+                "<div class=\"film-strip-marker-cap top\"></div>"
+                "<div class=\"film-strip-marker-cap bottom\"></div>"
+                "</div>",
+                marker.selected ? " selected" : "",
+                marker.hovered ? " hovered" : "",
+                marker.screen_x - groove_origin_x);
+        }
+        el_film_strip_markers_->SetInnerRML(markers_html);
+
+        updateTimelineTooltip(film_strip, input);
+    }
+
+    void RmlSequencerPanel::updateTimelineGuides(const float timeline_x, const float timeline_width,
+                                                 const gui::FilmStripRenderer& film_strip) {
+        if (!elements_cached_ || timeline_width <= 0.0f)
+            return;
+
+        struct ElementBounds {
+            float x = 0.0f;
+            float y = 0.0f;
+            float width = 0.0f;
+            float height = 0.0f;
+        };
+
+        const auto document_offset = document_->GetAbsoluteOffset(Rml::BoxArea::Border);
+        const auto measure = [document_offset](Rml::Element* const el) -> std::optional<ElementBounds> {
+            if (!el)
+                return std::nullopt;
+
+            const auto offset = el->GetAbsoluteOffset(Rml::BoxArea::Border);
+            const auto size = el->GetBox().GetSize(Rml::BoxArea::Border);
+            return ElementBounds{
+                .x = offset.x - document_offset.x,
+                .y = offset.y - document_offset.y,
+                .width = size.x,
+                .height = size.y,
+            };
+        };
+
+        const auto timeline_bounds = measure(el_timeline_);
+        const auto easing_bounds = measure(el_easing_stripe_);
+        if (!timeline_bounds.has_value() || !easing_bounds.has_value())
+            return;
+
+        float guide_left = timeline_bounds->x;
+        float guide_top = timeline_bounds->y;
+        float guide_width = timeline_bounds->width;
+        float guide_bottom = std::max(timeline_bounds->y + timeline_bounds->height,
+                                      easing_bounds->y + easing_bounds->height);
+
+        if (film_strip_attached_) {
+            if (const auto film_strip_bounds = measure(el_film_strip_panel_); film_strip_bounds.has_value()) {
+                guide_bottom = std::max(guide_bottom,
+                                        film_strip_bounds->y + film_strip_bounds->height);
+            }
+        }
+
+        guide_width = std::max(guide_width, 0.0f);
+        el_panel_guides_->SetProperty("left", std::format("{:.1f}px", guide_left));
+        el_panel_guides_->SetProperty("top", std::format("{:.1f}px", guide_top));
+        el_panel_guides_->SetProperty("width", std::format("{:.1f}px", guide_width));
+        el_panel_guides_->SetProperty("height", std::format("{:.1f}px", std::max(0.0f, guide_bottom - guide_top)));
+
+        const auto set_guide = [guide_width](Rml::Element* const el,
+                                             const std::optional<float> x,
+                                             const float width_px = 1.0f) {
+            if (!el)
+                return;
+            if (!x.has_value()) {
+                el->SetProperty("display", "none");
+                return;
+            }
+            const float clamped_center = clampCenteredSpan(*x, guide_width, width_px);
+            el->SetProperty("display", "block");
+            el->SetProperty("left", std::format("{:.1f}px", clamped_center - width_px * 0.5f));
+            el->SetProperty("width", std::format("{:.1f}px", width_px));
+        };
+
+        std::optional<float> strip_hover_x;
+        if (film_strip_attached_) {
+            if (const auto& hover = film_strip.hoverState(); hover.has_value())
+                strip_hover_x = hover->guide_x - timeline_x;
+        }
+
+        std::optional<float> hovered_x;
+        if (const auto hovered_id = hoveredKeyframeId(); hovered_id.has_value()) {
+            if (const auto* const keyframe = controller_.timeline().getKeyframeById(*hovered_id))
+                hovered_x = timeToX(keyframe->time, 0.0f, timeline_width);
+        }
+
+        std::optional<float> selected_x;
+        if (const auto selected = controller_.selectedKeyframe(); selected.has_value()) {
+            if (const auto* const keyframe = controller_.timeline().getKeyframe(*selected))
+                selected_x = timeToX(keyframe->time, 0.0f, timeline_width);
+        }
+
+        std::optional<float> playhead_x;
+        if (playhead_in_range_)
+            playhead_x = cached_playhead_screen_x_ - timeline_x;
+
+        set_guide(el_guide_strip_hover_, strip_hover_x, 1.0f);
+        set_guide(el_guide_hovered_, hovered_x, 1.5f);
+        set_guide(el_guide_selected_, selected_x, 2.0f);
+        set_guide(el_guide_playhead_, playhead_x, PLAYHEAD_WIDTH);
+    }
+
+    void RmlSequencerPanel::updateTimelineTooltip(const gui::FilmStripRenderer& film_strip,
+                                                  const PanelInputState& input) {
+        if (!elements_cached_ || !el_timeline_tooltip_) {
+            return;
+        }
+
+        const auto& hover = film_strip.hoverState();
+        if (!film_strip_attached_ || !hover.has_value()) {
+            el_timeline_tooltip_->SetProperty("display", "none");
+            return;
+        }
+
+        std::string html = std::format(
+            "<span class=\"timeline-tooltip-line title\">Time {}</span>",
+            formatTime(hover->exact_time));
+        if (hover->over_thumbnail) {
+            html += std::format(
+                "<span class=\"timeline-tooltip-line\">Sample {}</span>",
+                formatTime(hover->sample_time));
+            html += std::format(
+                "<span class=\"timeline-tooltip-line\">Covers {} - {}</span>",
+                formatTime(hover->interval_start_time),
+                formatTime(hover->interval_end_time));
+        }
+
+        const float dp = cached_dp_ratio_;
+        const float local_x = input.mouse_x - cached_panel_x_;
+        const float local_y = input.mouse_y - cached_panel_y_;
+        const float offset_x = 14.0f * dp;
+        const float offset_y = 10.0f * dp;
+        const bool align_right = local_x > cached_panel_width_ - 180.0f * dp;
+        const bool place_below = local_y < 48.0f * dp;
+
+        const float approx_width = 170.0f * dp;
+        const float approx_height = hover->over_thumbnail ? 54.0f * dp : 32.0f * dp;
+        float left = align_right ? local_x - approx_width - offset_x : local_x + offset_x;
+        float top = place_below ? local_y + offset_y : local_y - approx_height - offset_y;
+        left = std::clamp(left, 8.0f * dp, std::max(8.0f * dp, cached_panel_width_ - approx_width - 8.0f * dp));
+        top = std::clamp(top, 8.0f * dp, std::max(8.0f * dp, cached_total_height_ - approx_height - 8.0f * dp));
+
+        el_timeline_tooltip_->SetInnerRML(html);
+        el_timeline_tooltip_->SetProperty("left", std::format("{:.1f}px", left));
+        el_timeline_tooltip_->SetProperty("top", std::format("{:.1f}px", top));
+        el_timeline_tooltip_->SetProperty("display", "block");
+    }
+
     void RmlSequencerPanel::forwardInput(const PanelInputState& input) {
         if (!rml_context_)
             return;
@@ -672,12 +1406,11 @@ namespace lfs::vis {
         const float local_x = input.mouse_x - cached_panel_x_;
         const float local_y = input.mouse_y - cached_panel_y_;
 
-        const float total_h = cached_height_ + EASING_STRIPE_HEIGHT * cached_dp_ratio_;
+        const float total_h = cached_total_height_;
         hovered_ = local_x >= 0 && local_y >= 0 &&
                    local_x < cached_panel_width_ && local_y < total_h;
 
         if (!hovered_) {
-            tooltip_.clear();
             gui::RmlPanelHost::setFrameTooltip({}, nullptr);
             if (last_hovered_)
                 rml_context_->ProcessMouseLeave();
@@ -708,7 +1441,6 @@ namespace lfs::vis {
         if (!input.mouse_down[0])
             rml_context_->ProcessMouseButtonUp(0, 0);
 
-        tooltip_.clear();
         auto* hover = rml_context_->GetHoverElement();
         if (hover) {
             gui::RmlPanelHost::setFrameTooltip(gui::resolveRmlTooltip(hover), hover);
@@ -741,12 +1473,6 @@ namespace lfs::vis {
         wants_keyboard_ = gui::rml_input::hasFocusedKeyboardTarget(focused) ||
                           dragging_playhead_ || dragging_keyframe_ ||
                           controller_.hasSelection() || !selected_keyframes_.empty();
-    }
-
-    std::string RmlSequencerPanel::consumeTooltip() {
-        std::string result;
-        result.swap(tooltip_);
-        return result;
     }
 
     bool RmlSequencerPanel::consumeSavePathRequest() {
@@ -825,10 +1551,14 @@ namespace lfs::vis {
             el_btn_export_->SetClass("disabled", !has_camera_keyframes);
         if (el_btn_clear_)
             el_btn_clear_->SetClass("disabled", !has_any_state);
-        if (el_panel_)
+        if (el_panel_) {
             el_panel_->SetClass("is-floating", floating_);
+            el_panel_->SetClass("film-strip-attached", film_strip_attached_);
+        }
         if (el_floating_header_)
             el_floating_header_->SetClass("hidden", !floating_);
+        if (el_film_strip_panel_)
+            el_film_strip_panel_->SetProperty("display", film_strip_attached_ ? "block" : "none");
         if (el_transport_dock_sep_)
             el_transport_dock_sep_->SetClass("hidden", false);
         if (el_btn_dock_toggle_) {
@@ -854,12 +1584,16 @@ namespace lfs::vis {
 
     void RmlSequencerPanel::render(const float panel_x, const float panel_y,
                                    const float panel_width, const float total_height,
-                                   const PanelInputState& input) {
+                                   const PanelInputState& input,
+                                   RenderingManager* rm, SceneManager* sm,
+                                   gui::FilmStripRenderer& film_strip) {
+        clearPendingComposite();
         const float dp = rml_manager_->getDpRatio();
         cached_dp_ratio_ = dp;
 
         const float strip_height = film_strip_attached_ ? gui::FilmStripRenderer::STRIP_HEIGHT : 0.0f;
         const float easing_height = EASING_STRIPE_HEIGHT * dp;
+        cached_total_height_ = std::max(0.0f, total_height);
         cached_height_ = std::max(0.0f, total_height - easing_height - strip_height);
 
         cached_panel_x_ = panel_x;
@@ -867,7 +1601,7 @@ namespace lfs::vis {
         cached_panel_width_ = panel_width;
 
         const int w = static_cast<int>(panel_width);
-        const int h = static_cast<int>(cached_height_);
+        const int h = static_cast<int>(cached_total_height_);
 
         if (w <= 0 || h <= 0)
             return;
@@ -887,6 +1621,32 @@ namespace lfs::vis {
 
         if (elements_cached_) {
             el_timeline_->SetProperty("width", std::format("{:.1f}px", timelineWidth()));
+        }
+
+        forwardInput(input);
+
+        const float inner_pad_h = INNER_PADDING_H * dp;
+        const float inner_pad = INNER_PADDING * dp;
+        const float transport_row_h = TRANSPORT_ROW_HEIGHT * dp;
+        const float content_height = cached_height_ - 2.0f * inner_pad - transport_row_h;
+        const float tl_width = timelineWidth();
+
+        const Vec2 timeline_pos = {panel_x + inner_pad_h,
+                                   panel_y + inner_pad + transport_row_h};
+
+        if (elements_cached_) {
+            handleTimelineInteraction(timeline_pos, tl_width, content_height, input);
+            handleEasingStripeInteraction(timeline_pos.x, tl_width, input);
+            rebuildFilmStrip(timeline_pos.x, tl_width,
+                             panel_y + cached_height_ + easing_height - BORDER_OVERLAP * dp,
+                             input, rm, sm, film_strip);
+
+            cached_playhead_screen_x_ = timeline_pos.x + clampCenteredSpan(
+                timeToX(controller_.playhead(), 0.0f, tl_width),
+                tl_width,
+                PLAYHEAD_HANDLE_WIDTH * dp);
+            playhead_in_range_ = cached_playhead_screen_x_ >= timeline_pos.x &&
+                                 cached_playhead_screen_x_ <= timeline_pos.x + tl_width;
 
             updateButtonStates();
             updateTransportSettings();
@@ -894,9 +1654,9 @@ namespace lfs::vis {
             updateTimeDisplay();
             rebuildKeyframes();
             rebuildRuler();
+            rebuildEasingStripe(timeline_pos.x, tl_width);
+            updateTimelineGuides(timeline_pos.x, tl_width, film_strip);
         }
-
-        forwardInput(input);
 
         if (!rml_manager_->shouldDeferFboUpdate(fbo_)) {
             if (rml_manager_) {
@@ -919,6 +1679,12 @@ namespace lfs::vis {
             fbo_.bind(&prev_fbo);
             render_iface->SetTargetFramebuffer(fbo_.fbo());
 
+            if (!floating_) {
+                const auto& shell_bg = theme().menu_background();
+                glClearColor(shell_bg.x, shell_bg.y, shell_bg.z, 1.0f);
+                glClear(GL_COLOR_BUFFER_BIT);
+            }
+
             render_iface->BeginFrame();
             rml_context_->Render();
             render_iface->EndFrame();
@@ -927,24 +1693,20 @@ namespace lfs::vis {
             fbo_.unbind(prev_fbo);
         }
 
-        if (fbo_.valid())
-            fbo_.blitToScreen(panel_x, panel_y, panel_width, cached_height_,
-                              input.screen_w, input.screen_h);
+        if (!fbo_.valid())
+            return;
 
-        const float inner_pad_h = INNER_PADDING_H * dp;
-        const float inner_pad = INNER_PADDING * dp;
-        const float transport_row_h = TRANSPORT_ROW_HEIGHT * dp;
-        const float content_height = cached_height_ - 2.0f * inner_pad - transport_row_h;
-        const float tl_width = timelineWidth();
+        if (floating_) {
+            pending_foreground_composite_ = true;
+            pending_composite_x_ = panel_x;
+            pending_composite_y_ = panel_y;
+            pending_composite_width_ = panel_width;
+            pending_composite_height_ = cached_total_height_;
+            return;
+        }
 
-        const Vec2 timeline_pos = {panel_x + inner_pad_h,
-                                   panel_y + inner_pad + transport_row_h};
-
-        cached_playhead_screen_x_ = timeToX(controller_.playhead(), timeline_pos.x, tl_width);
-        playhead_in_range_ = cached_playhead_screen_x_ >= timeline_pos.x &&
-                             cached_playhead_screen_x_ <= timeline_pos.x + tl_width;
-
-        handleTimelineInteraction(timeline_pos, tl_width, content_height, input);
+        fbo_.blitToScreen(panel_x, panel_y, panel_width, cached_total_height_,
+                          input.screen_w, input.screen_h);
     }
 
     void RmlSequencerPanel::handleTimelineInteraction(const Vec2& pos, const float width,
@@ -1003,7 +1765,10 @@ namespace lfs::vis {
                 hovered_keyframe_ = i;
         }
 
-        const float playhead_x = timeToX(controller_.playhead(), pos.x, width);
+        const float playhead_x = pos.x + clampCenteredSpan(
+            timeToX(controller_.playhead(), 0.0f, width),
+            width,
+            PLAYHEAD_HANDLE_WIDTH * s);
         const float playhead_dist = std::abs(mx - playhead_x);
         bool on_playhead_handle = playhead_dist < PLAYHEAD_HIT_RADIUS * s;
 
@@ -1139,8 +1904,95 @@ namespace lfs::vis {
             context_menu_y_ = my;
         }
 
-        // Context menu rendering is handled in sequencer_ui_manager for now
-        // (still uses ImGui for context menus and tooltips as part of the viewport layer)
+        // Context menu display is handled by the sequencer RML overlay.
+    }
+
+    void RmlSequencerPanel::handleEasingStripeInteraction(const float timeline_x, const float timeline_width,
+                                                          const PanelInputState& input) {
+        const float dp = cached_dp_ratio_;
+        const float stripe_y = cached_panel_y_ + cached_height_;
+        const float stripe_h = EASING_STRIPE_HEIGHT * dp;
+        const float mx = input.mouse_x;
+        const float my = input.mouse_y;
+
+        if (timeline_width <= 0.0f || controller_.timeline().keyframes().empty())
+            return;
+
+        if (mx < timeline_x || mx > timeline_x + timeline_width ||
+            my < stripe_y || my > stripe_y + stripe_h) {
+            return;
+        }
+
+        if (input.mouse_clicked[1]) {
+            std::optional<size_t> nearest;
+            float best_dist = KEYFRAME_RADIUS * 3.0f * dp;
+            for (size_t i = 0; i < controller_.timeline().keyframes().size(); ++i) {
+                const float dist = std::abs(mx - timeToX(controller_.timeline().keyframes()[i].time,
+                                                         timeline_x, timeline_width));
+                if (dist < best_dist) {
+                    best_dist = dist;
+                    nearest = i;
+                }
+            }
+
+            context_menu_time_ = nearest.has_value()
+                                     ? controller_.timeline().keyframes()[*nearest].time
+                                     : controller_.playhead();
+            context_menu_keyframe_ = nearest;
+            context_menu_open_ = true;
+        }
+
+        if (input.mouse_clicked[0]) {
+            std::optional<size_t> nearest;
+            float best_dist = KEYFRAME_RADIUS * 2.0f * dp;
+            for (size_t i = 0; i < controller_.timeline().keyframes().size(); ++i) {
+                const float dist = std::abs(mx - timeToX(controller_.timeline().keyframes()[i].time,
+                                                         timeline_x, timeline_width));
+                if (dist < best_dist) {
+                    best_dist = dist;
+                    nearest = i;
+                }
+            }
+            if (nearest.has_value())
+                lfs::core::events::cmd::SequencerSelectKeyframe{.keyframe_index = *nearest}.emit();
+        }
+    }
+
+    void RmlSequencerPanel::handleFilmStripInteraction(const float timeline_x, const float timeline_width,
+                                                       const PanelInputState& input,
+                                                       gui::FilmStripRenderer& film_strip) {
+        if (!film_strip_attached_) {
+            if (film_strip_scrubbing_) {
+                film_strip_scrubbing_ = false;
+                controller_.endScrub();
+            }
+            return;
+        }
+
+        const bool can_scrub = controller_.timeline().size() >= 2;
+        const float scrub_time = can_scrub
+                                     ? std::clamp(
+                                           sequencer_ui::screenXToTime(input.mouse_x, timeline_x, timeline_width,
+                                                                       getDisplayEndTime(), pan_offset_),
+                                           controller_.timeline().startTime(), controller_.timeline().endTime())
+                                     : 0.0f;
+
+        if (film_strip_scrubbing_) {
+            if (input.mouse_down[0] && can_scrub) {
+                controller_.scrub(scrub_time);
+            } else {
+                film_strip_scrubbing_ = false;
+                controller_.endScrub();
+            }
+        }
+
+        if (const auto& hover = film_strip.hoverState(); hover.has_value()) {
+            if (!film_strip_scrubbing_ && can_scrub && !input.want_capture_mouse && input.mouse_clicked[0]) {
+                film_strip_scrubbing_ = true;
+                controller_.beginScrub();
+                controller_.scrub(scrub_time);
+            }
+        }
     }
 
     void RmlSequencerPanel::openFocalLengthEdit(const size_t index, const float current_focal_mm) {

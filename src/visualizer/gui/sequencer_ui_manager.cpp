@@ -31,11 +31,8 @@
 #include <algorithm>
 #include <cmath>
 #include <format>
-#include <glm/gtc/type_ptr.hpp>
 #include <string_view>
 #include <vector>
-#include <imgui.h>
-#include <ImGuizmo.h>
 
 namespace lfs::vis::gui {
 
@@ -43,17 +40,6 @@ namespace lfs::vis::gui {
         constexpr size_t MIN_PATH_RENDER_SAMPLES = 128;
         constexpr size_t MAX_PATH_RENDER_SAMPLES = 4096;
         constexpr float PATH_SAMPLES_PER_VIEWPORT_PIXEL = 2.0f;
-
-        [[nodiscard]] std::string formatTimelineTime(const float seconds) {
-            const int mins = static_cast<int>(seconds) / 60;
-            const float secs = seconds - static_cast<float>(mins * 60);
-            return std::format("{}:{:05.2f}", mins, secs);
-        }
-
-        void drawGuideLine(ImDrawList* const dl, const float x, const float top, const float bottom,
-                           const ImU32 color, const float thickness) {
-            dl->AddLine({std::round(x), top}, {std::round(x), bottom}, color, thickness);
-        }
 
     } // namespace
 
@@ -68,27 +54,33 @@ namespace lfs::vis::gui {
     SequencerUIManager::~SequencerUIManager() = default;
 
     void SequencerUIManager::destroyGLResources() {
+        if (panel_)
+            panel_->destroyGLResources();
+        if (overlay_)
+            overlay_->destroyGLResources();
         pip_fbo_ = {};
         pip_texture_ = {};
         pip_depth_rbo_ = {};
         pip_initialized_ = false;
         line_renderer_.destroyGLResources();
         film_strip_.destroyGLResources();
-        if (panel_)
-            panel_->destroyGLResources();
-        if (overlay_)
-            overlay_->destroyGLResources();
     }
 
     void SequencerUIManager::setSequencerEnabled(const bool enabled) {
         if (enabled)
             return;
 
+        if (panel_)
+            panel_->clearPendingComposite();
+
         if (ui_state_.show_pip_preview)
             ui_state_.show_pip_preview = false;
 
+        viewport_edit_mode_ = SequencerViewportEditMode::None;
+        finalizeViewportTransformDrag(false);
         pip_last_keyframe_ = std::nullopt;
         pip_needs_update_ = true;
+        last_panel_frame_time_ = std::chrono::steady_clock::now();
         endViewportKeyframeEdit();
     }
 
@@ -101,7 +93,7 @@ namespace lfs::vis::gui {
         if (auto* sm = viewer_->getSceneManager())
             sm->clearSelection();
         viewport_keyframe_edit_snapshot_ = *keyframe;
-        keyframe_gizmo_op_ = ImGuizmo::OPERATION(0);
+        finalizeViewportTransformDrag(false);
         edit_entered_mouse_down_ = true;
     }
 
@@ -109,6 +101,24 @@ namespace lfs::vis::gui {
         viewport_keyframe_edit_snapshot_ = std::nullopt;
         if (overlay_)
             overlay_->hideEditOverlay();
+    }
+
+    void SequencerUIManager::finalizeViewportTransformDrag(const bool emit_change_event) {
+        const bool changed = viewport_transform_drag_changed_;
+        viewport_transform_drag_active_ = false;
+        viewport_transform_drag_changed_ = false;
+        viewport_transform_drag_world_offset_ = glm::vec3(0.0f);
+        viewport_transform_drag_view_depth_ = 1.0f;
+        viewport_transform_drag_focal_length_mm_ = 0.0f;
+
+        if (emit_change_event && changed) {
+            lfs::core::events::state::KeyframeListChanged{
+                .count = controller_.timeline().realKeyframeCount()}
+                .emit();
+        }
+
+        if (auto* const rm = viewer_ ? viewer_->getRenderingManager() : nullptr)
+            rm->markDirty(DirtyFlag::OVERLAY);
     }
 
     sequencer::CameraState SequencerUIManager::currentViewportCameraState() const {
@@ -199,7 +209,8 @@ namespace lfs::vis::gui {
 
         ui::NodeSelected::when([this](const auto& e) {
             if (e.type != "KEYFRAME") {
-                keyframe_gizmo_op_ = ImGuizmo::OPERATION(0);
+                viewport_edit_mode_ = SequencerViewportEditMode::None;
+                finalizeViewportTransformDrag(false);
                 endViewportKeyframeEdit();
             }
         });
@@ -277,34 +288,21 @@ namespace lfs::vis::gui {
 
         if (ui_state_.show_camera_path && !actively_following) {
             renderCameraPath(viewport);
-            renderKeyframeGizmo(ctx, viewport);
+        } else if (viewport_transform_drag_active_) {
+            finalizeViewportTransformDrag(true);
         }
         renderKeyframePreview(ctx);
         renderSequencerPanel(ctx, viewport, panel_x, panel_y, panel_width, panel_height, panel_input);
-        {
-            const float dp = panel_->cachedDpRatio();
-            const float px = panel_->cachedPanelX();
-            const float pw = panel_->cachedPanelWidth();
-            tl_geo_ = {
-                px + panel_config::INNER_PADDING_H * dp,
-                pw - panel_config::INNER_PADDING_H * 2.0f * dp,
-                px, pw, panel_->cachedPanelY(), dp};
-        }
-        timeline_tooltip_active_ = false;
-        timeline_tooltip_text_.clear();
-        renderFilmStrip(ctx);
-        drawEasingCurves();
-        drawTimelineGuides();
-        drawTimelineTooltip();
-        drawPipPreviewWindow(viewport);
+        syncPipPreviewWindow(viewport);
 
         overlay_->render(sdl_buf.window_w, sdl_buf.window_h);
     }
 
-    void SequencerUIManager::compositeOverlays(const int screen_w, const int screen_h) const {
-        if (!overlay_)
-            return;
-        overlay_->compositeToScreen(screen_w, screen_h);
+    void SequencerUIManager::compositeOverlays(const int screen_w, const int screen_h) {
+        if (panel_)
+            panel_->compositeToScreen(screen_w, screen_h);
+        if (overlay_)
+            overlay_->compositeToScreen(screen_w, screen_h);
     }
 
     bool SequencerUIManager::blocksPointer(const double x, const double y) const {
@@ -322,8 +320,15 @@ namespace lfs::vis::gui {
                                                   const float panel_width, const float panel_height,
                                                   const PanelInputState& panel_input) {
         (void)viewport;
-        const auto& io = ImGui::GetIO();
-        controller_.update(io.DeltaTime);
+        const auto now = std::chrono::steady_clock::now();
+        float delta_time = std::chrono::duration<float>(now - last_panel_frame_time_).count();
+        last_panel_frame_time_ = now;
+        if (!std::isfinite(delta_time) || delta_time < 0.0f)
+            delta_time = 0.0f;
+        delta_time = std::min(delta_time, 0.1f);
+        panel_elapsed_time_ += delta_time;
+
+        controller_.update(delta_time);
 
         const bool is_playing = controller_.isPlaying() && controller_.timeline().realKeyframeCount() > 0;
 
@@ -342,11 +347,12 @@ namespace lfs::vis::gui {
         panel_->setFilmStripAttached(ui_state_.show_film_strip);
 
         panel_input_ = toSequencerPanelInput(panel_input);
-        panel_input_.time = static_cast<float>(ImGui::GetTime());
-        panel_input_.delta_time = io.DeltaTime;
+        panel_input_.time = panel_elapsed_time_;
+        panel_input_.delta_time = delta_time;
         panel_input_.want_capture_mouse = guiFocusState().want_capture_mouse;
 
-        panel_->render(panel_x, panel_y, panel_width, panel_height, panel_input_);
+        panel_->render(panel_x, panel_y, panel_width, panel_height, panel_input_,
+                       viewer_->getRenderingManager(), viewer_->getSceneManager(), film_strip_);
 
         if (panel_->isHovered())
             guiFocusState().want_capture_mouse = true;
@@ -356,7 +362,7 @@ namespace lfs::vis::gui {
         const auto timeline_menu = panel_->consumeContextMenu();
         if (timeline_menu.open) {
             overlay_->showContextMenu(panel_input_.mouse_x, panel_input_.mouse_y,
-                                      timeline_menu.keyframe, timeline_menu.time, keyframe_gizmo_op_);
+                                      timeline_menu.keyframe, timeline_menu.time, viewport_edit_mode_);
         }
 
         const auto time_req = panel_->consumeTimeEditRequest();
@@ -534,19 +540,40 @@ namespace lfs::vis::gui {
         constexpr float FRUSTUM_DEPTH = 0.25f;
         constexpr float SENSOR_ASPECT = rendering::SENSOR_WIDTH_35MM / rendering::SENSOR_HEIGHT_35MM;
         constexpr float HIT_RADIUS = 15.0f;
+        constexpr float TRANSLATE_HANDLE_RADIUS = 9.0f;
+        constexpr float ROTATE_HANDLE_RADIUS = 12.0f;
+        constexpr float HANDLE_THICKNESS = 2.0f;
+        constexpr int HANDLE_RING_SEGMENTS = 24;
 
         const auto& timeline = controller_.timeline();
+        if (timeline.empty())
+            return;
+
         const auto& vp = viewer_->getViewport();
         auto* const rm = viewer_->getRenderingManager();
         if (!rm)
             return;
         const auto& settings = rm->getSettings();
+        const glm::mat3 viewport_rotation = vp.getRotationMatrix();
+        const glm::vec3 viewport_translation = vp.getTranslation();
         const glm::ivec2 vp_size(static_cast<int>(viewport.size.x), static_cast<int>(viewport.size.y));
+
+        if (viewport_edit_mode_ != SequencerViewportEditMode::None) {
+            const auto selected = controller_.selectedKeyframe();
+            const auto* const selected_keyframe =
+                selected.has_value() && *selected < timeline.size()
+                    ? timeline.getKeyframe(*selected)
+                    : nullptr;
+            if (!selected_keyframe || selected_keyframe->is_loop_point) {
+                viewport_edit_mode_ = SequencerViewportEditMode::None;
+                finalizeViewportTransformDrag(false);
+            }
+        }
 
         const auto projectToScreen = [&](const glm::vec3& pos) -> glm::vec2 {
             const auto projected = lfs::rendering::projectWorldPoint(
-                vp.getRotationMatrix(),
-                vp.getTranslation(),
+                viewport_rotation,
+                viewport_translation,
                 vp_size,
                 pos,
                 settings.focal_length_mm,
@@ -560,8 +587,8 @@ namespace lfs::vis::gui {
 
         const auto isVisible = [&](const glm::vec3& pos) -> bool {
             const auto projected = lfs::rendering::projectWorldPoint(
-                vp.getRotationMatrix(),
-                vp.getTranslation(),
+                viewport_rotation,
+                viewport_translation,
                 vp_size,
                 pos,
                 settings.focal_length_mm,
@@ -577,15 +604,44 @@ namespace lfs::vis::gui {
                    projected->y <= viewport.size.y + margin_y;
         };
 
-        const auto toColor = [](const ImVec4& c, float alpha) -> glm::vec4 {
+        const auto worldPointAtDepth = [&](const float screen_x,
+                                           const float screen_y,
+                                           const float depth) -> glm::vec3 {
+            const float local_x = screen_x - viewport.pos.x;
+            const float local_y = screen_y - viewport.pos.y;
+
+            if (settings.orthographic) {
+                if (!std::isfinite(settings.ortho_scale) || settings.ortho_scale <= 0.0f)
+                    return viewport_transform_drag_start_position_;
+
+                const float cx = static_cast<float>(vp_size.x) * 0.5f;
+                const float cy = static_cast<float>(vp_size.y) * 0.5f;
+                const glm::vec3 view_pos(
+                    (local_x - cx) / settings.ortho_scale,
+                    (cy - local_y) / settings.ortho_scale,
+                    -depth);
+                return viewport_rotation * view_pos + viewport_translation;
+            }
+
+            const float focal_length_mm =
+                viewport_transform_drag_focal_length_mm_ > 0.0f
+                    ? viewport_transform_drag_focal_length_mm_
+                    : settings.focal_length_mm;
+            return lfs::rendering::unprojectScreenPoint(
+                viewport_rotation,
+                viewport_translation,
+                vp_size,
+                local_x,
+                local_y,
+                depth,
+                focal_length_mm);
+        };
+
+        const auto toColor = [](const ImVec4& c, const float alpha) -> glm::vec4 {
             return {c.x, c.y, c.z, alpha};
         };
 
         const auto& t = theme();
-
-        if (timeline.empty())
-            return;
-
         const auto* const wm = viewer_->getWindowManager();
         const glm::ivec2 screen_size = wm ? wm->getWindowSize() : glm::ivec2{};
         const glm::ivec2 framebuffer_size = wm ? wm->getFramebufferSize() : glm::ivec2{};
@@ -600,6 +656,17 @@ namespace lfs::vis::gui {
                 static_cast<int>(std::round(viewport.pos.y)),
                 static_cast<int>(std::round(viewport.size.x)),
                 static_cast<int>(std::round(viewport.size.y))});
+
+        const auto addCircleOutline = [&](const glm::vec2& center, const float radius,
+                                          const glm::vec4& color, const float thickness) {
+            for (int i = 0; i < HANDLE_RING_SEGMENTS; ++i) {
+                const float a0 = 2.0f * 3.14159265f * static_cast<float>(i) / static_cast<float>(HANDLE_RING_SEGMENTS);
+                const float a1 = 2.0f * 3.14159265f * static_cast<float>(i + 1) / static_cast<float>(HANDLE_RING_SEGMENTS);
+                const glm::vec2 p0 = center + glm::vec2(std::cos(a0), std::sin(a0)) * radius;
+                const glm::vec2 p1 = center + glm::vec2(std::cos(a1), std::sin(a1)) * radius;
+                line_renderer_.addLine(p0, p1, color, thickness);
+            }
+        };
 
         const int path_framerate = std::max(ui_state_.framerate, 1);
         const float base_path_time_step = 1.0f / static_cast<float>(path_framerate);
@@ -688,7 +755,6 @@ namespace lfs::vis::gui {
             const glm::vec3 right = rendering::cameraRight(rot_mat);
 
             const glm::vec3 apex = kf.position;
-
             const glm::vec3 base_center = apex + forward * FRUSTUM_DEPTH;
             const glm::vec3 tl = base_center + up * half_h - right * half_w;
             const glm::vec3 tr = base_center + up * half_h + right * half_w;
@@ -713,6 +779,40 @@ namespace lfs::vis::gui {
             const glm::vec3 up_tip = base_center + up * half_h * 1.3f;
             const glm::vec2 s_up = projectToScreen(up_tip);
             line_renderer_.addTriangleFilled(s_up, s_tl, s_tr, color);
+        }
+
+        if (viewport_edit_mode_ != SequencerViewportEditMode::None) {
+            if (const auto selected = controller_.selectedKeyframe();
+                selected.has_value() && *selected < timeline.size()) {
+                const auto* const keyframe = timeline.getKeyframe(*selected);
+                if (keyframe && !keyframe->is_loop_point && isVisible(keyframe->position)) {
+                    const glm::vec2 handle_center = projectToScreen(keyframe->position);
+                    const float radius =
+                        viewport_edit_mode_ == SequencerViewportEditMode::Rotate
+                            ? ROTATE_HANDLE_RADIUS
+                            : TRANSLATE_HANDLE_RADIUS;
+                    const glm::vec4 handle_fill = toColor(
+                        lighten(t.palette.primary, viewport_transform_drag_active_ ? 0.2f : 0.08f),
+                        viewport_transform_drag_active_ ? 0.88f : 0.58f);
+                    const glm::vec4 handle_outline = toColor(lighten(t.palette.primary, 0.35f), 0.96f);
+
+                    line_renderer_.addCircleFilled(handle_center, radius, handle_fill, 18);
+                    if (viewport_edit_mode_ == SequencerViewportEditMode::Translate) {
+                        line_renderer_.addLine(handle_center + glm::vec2(-radius * 1.5f, 0.0f),
+                                               handle_center + glm::vec2(radius * 1.5f, 0.0f),
+                                               handle_outline, HANDLE_THICKNESS);
+                        line_renderer_.addLine(handle_center + glm::vec2(0.0f, -radius * 1.5f),
+                                               handle_center + glm::vec2(0.0f, radius * 1.5f),
+                                               handle_outline, HANDLE_THICKNESS);
+                    } else {
+                        addCircleOutline(handle_center, radius + 2.0f, handle_outline, HANDLE_THICKNESS);
+                        line_renderer_.addLine(handle_center + glm::vec2(radius * 0.2f, -radius * 1.4f),
+                                               handle_center + glm::vec2(radius * 1.1f, -radius * 0.5f),
+                                               handle_outline, HANDLE_THICKNESS);
+                    }
+                    line_renderer_.addCircleFilled(handle_center, 2.5f, handle_outline, 10);
+                }
+            }
         }
 
         if (!controller_.isStopped()) {
@@ -761,93 +861,115 @@ namespace lfs::vis::gui {
 
         line_renderer_.end();
 
-        if (mouse_in_viewport && !ImGui::IsAnyItemHovered() &&
-            !overlay_->wantsInput() && hovered_keyframe.has_value() && !ImGuizmo::IsOver()) {
+        const bool overlay_blocks_mouse =
+            overlay_->wantsInput() || overlay_->isMouseOverEditOverlay(mouse_x, mouse_y);
+        const bool mouse_blocked_by_ui =
+            overlay_blocks_mouse ||
+            (!viewport_transform_drag_active_ && guiFocusState().want_capture_mouse);
+
+        const auto beginTransformDrag = [&](const size_t keyframe_index) {
+            if (viewport_edit_mode_ == SequencerViewportEditMode::None)
+                return;
+
+            const auto* const keyframe = timeline.getKeyframe(keyframe_index);
+            if (!keyframe || keyframe->is_loop_point)
+                return;
+
+            endViewportKeyframeEdit();
+            controller_.selectKeyframe(keyframe_index);
+            if (auto* const sm = viewer_->getSceneManager())
+                sm->clearSelection();
+
+            const glm::vec3 view_pos =
+                glm::transpose(viewport_rotation) * (keyframe->position - viewport_translation);
+            viewport_transform_drag_active_ = true;
+            viewport_transform_drag_changed_ = false;
+            viewport_transform_drag_start_mouse_ = {mouse_x, mouse_y};
+            viewport_transform_drag_start_position_ = keyframe->position;
+            viewport_transform_drag_start_rotation_ = keyframe->rotation;
+            viewport_transform_drag_view_depth_ = std::max(-view_pos.z, 1e-3f);
+            viewport_transform_drag_focal_length_mm_ = settings.focal_length_mm;
+            viewport_transform_drag_world_offset_ =
+                viewport_edit_mode_ == SequencerViewportEditMode::Translate
+                    ? keyframe->position - worldPointAtDepth(
+                                              mouse_x, mouse_y, viewport_transform_drag_view_depth_)
+                    : glm::vec3(0.0f);
+            guiFocusState().want_capture_mouse = true;
+            rm->markDirty(DirtyFlag::OVERLAY);
+        };
+
+        if (viewport_transform_drag_active_) {
+            guiFocusState().want_capture_mouse = true;
+
+            const auto selected_id = controller_.selectedKeyframeId();
+            const auto* const keyframe =
+                selected_id.has_value()
+                    ? timeline.getKeyframeById(*selected_id)
+                    : nullptr;
+            if (!selected_id.has_value() || !keyframe || keyframe->is_loop_point ||
+                viewport_edit_mode_ == SequencerViewportEditMode::None) {
+                finalizeViewportTransformDrag(false);
+                return;
+            }
+
+            if (!input.mouse_down[0]) {
+                finalizeViewportTransformDrag(true);
+                return;
+            }
+
+            bool changed = false;
+            if (viewport_edit_mode_ == SequencerViewportEditMode::Translate) {
+                const glm::vec3 new_position =
+                    worldPointAtDepth(mouse_x, mouse_y, viewport_transform_drag_view_depth_) +
+                    viewport_transform_drag_world_offset_;
+                changed = controller_.updateKeyframeById(
+                    *selected_id,
+                    new_position,
+                    keyframe->rotation,
+                    keyframe->focal_length_mm);
+            } else if (viewport_edit_mode_ == SequencerViewportEditMode::Rotate) {
+                const glm::vec2 mouse_delta =
+                    glm::vec2(mouse_x, mouse_y) - viewport_transform_drag_start_mouse_;
+                const glm::quat yaw = glm::angleAxis(
+                    mouse_delta.x * 0.008f,
+                    glm::normalize(rendering::cameraUp(viewport_rotation)));
+                const glm::quat pitch = glm::angleAxis(
+                    -mouse_delta.y * 0.008f,
+                    glm::normalize(rendering::cameraRight(viewport_rotation)));
+                const glm::quat new_rotation =
+                    glm::normalize(yaw * pitch * viewport_transform_drag_start_rotation_);
+                changed = controller_.updateKeyframeById(
+                    *selected_id,
+                    keyframe->position,
+                    new_rotation,
+                    keyframe->focal_length_mm);
+            }
+
+            if (changed) {
+                viewport_transform_drag_changed_ = true;
+                pip_needs_update_ = true;
+                rm->markDirty(DirtyFlag::OVERLAY);
+            }
+            return;
+        }
+
+        if (mouse_in_viewport && !mouse_blocked_by_ui && hovered_keyframe.has_value()) {
             const auto* const hovered = timeline.getKeyframe(*hovered_keyframe);
             if (hovered && !hovered->is_loop_point) {
                 if (input.mouse_clicked[0]) {
-                    beginViewportKeyframeEdit(*hovered_keyframe);
+                    if (viewport_edit_mode_ != SequencerViewportEditMode::None)
+                        beginTransformDrag(*hovered_keyframe);
+                    else
+                        beginViewportKeyframeEdit(*hovered_keyframe);
                     guiFocusState().want_capture_mouse = true;
                 }
                 if (input.mouse_clicked[1]) {
                     overlay_->showContextMenu(mouse_x, mouse_y, hovered_keyframe,
-                                              hovered->time, keyframe_gizmo_op_);
+                                              hovered->time, viewport_edit_mode_);
                     guiFocusState().want_capture_mouse = true;
                 }
             }
         }
-    }
-
-    void SequencerUIManager::renderKeyframeGizmo(const UIContext& ctx, const ViewportLayout& viewport) {
-        if (keyframe_gizmo_op_ == ImGuizmo::OPERATION(0))
-            return;
-
-        const auto selected = controller_.selectedKeyframe();
-        if (!selected.has_value()) {
-            keyframe_gizmo_op_ = ImGuizmo::OPERATION(0);
-            return;
-        }
-
-        const auto& timeline = controller_.timeline();
-        if (*selected >= timeline.size())
-            return;
-
-        const auto* kf = timeline.getKeyframe(*selected);
-        if (!kf || kf->is_loop_point) {
-            keyframe_gizmo_op_ = ImGuizmo::OPERATION(0);
-            return;
-        }
-
-        auto* const rendering_manager = ctx.viewer->getRenderingManager();
-        if (!rendering_manager)
-            return;
-
-        const auto& settings = rendering_manager->getSettings();
-        auto& vp = ctx.viewer->getViewport();
-        const glm::mat4 view = vp.getViewMatrix();
-        const glm::ivec2 vp_size(static_cast<int>(viewport.size.x), static_cast<int>(viewport.size.y));
-        const glm::mat4 projection = lfs::rendering::createProjectionMatrix(
-            vp_size, lfs::rendering::focalLengthToVFov(settings.focal_length_mm), settings.orthographic, settings.ortho_scale);
-
-        const glm::mat3 rot_mat = glm::mat3_cast(kf->rotation);
-        glm::mat4 gizmo_matrix(rot_mat);
-        gizmo_matrix[3] = glm::vec4(kf->position, 1.0f);
-
-        ImGuizmo::SetOrthographic(settings.orthographic);
-        ImGuizmo::SetRect(viewport.pos.x, viewport.pos.y, viewport.size.x, viewport.size.y);
-
-        ImDrawList* const dl = ImGui::GetForegroundDrawList();
-        const ImVec2 clip_min(viewport.pos.x, viewport.pos.y);
-        const ImVec2 clip_max(clip_min.x + viewport.size.x, clip_min.y + viewport.size.y);
-        dl->PushClipRect(clip_min, clip_max, true);
-        ImGuizmo::SetDrawlist(dl);
-
-        const ImGuizmo::MODE mode = (keyframe_gizmo_op_ == ImGuizmo::ROTATE) ? ImGuizmo::LOCAL : ImGuizmo::WORLD;
-        glm::mat4 delta;
-        const bool changed = ImGuizmo::Manipulate(
-            glm::value_ptr(view), glm::value_ptr(projection),
-            keyframe_gizmo_op_, mode,
-            glm::value_ptr(gizmo_matrix), glm::value_ptr(delta), nullptr);
-
-        const bool is_using = ImGuizmo::IsUsing();
-
-        if (is_using && !keyframe_gizmo_active_) {
-            keyframe_gizmo_active_ = true;
-        }
-
-        if (changed) {
-            const glm::vec3 new_pos(gizmo_matrix[3]);
-            const glm::quat new_rot = glm::quat_cast(glm::mat3(gizmo_matrix));
-            controller_.updateKeyframe(*selected, new_pos, new_rot, kf->focal_length_mm);
-            pip_needs_update_ = true;
-        }
-
-        if (!is_using && keyframe_gizmo_active_) {
-            keyframe_gizmo_active_ = false;
-            lfs::core::events::state::KeyframeListChanged{.count = controller_.timeline().realKeyframeCount()}.emit();
-        }
-
-        dl->PopClipRect();
     }
 
     void SequencerUIManager::handleOverlayActions() {
@@ -872,33 +994,44 @@ namespace lfs::vis::gui {
                 pip_needs_update_ = true;
             } break;
             case Action::UPDATE_KEYFRAME:
+                viewport_edit_mode_ = SequencerViewportEditMode::None;
+                finalizeViewportTransformDrag(false);
                 endViewportKeyframeEdit();
                 cmd::SequencerSelectKeyframe{.keyframe_index = action->keyframe_index}.emit();
                 cmd::SequencerUpdateKeyframe{}.emit();
                 break;
             case Action::GOTO_KEYFRAME:
+                viewport_edit_mode_ = SequencerViewportEditMode::None;
+                finalizeViewportTransformDrag(false);
                 endViewportKeyframeEdit();
                 cmd::SequencerGoToKeyframe{.keyframe_index = action->keyframe_index}.emit();
                 break;
             case Action::EDIT_FOCAL_LENGTH:
+                finalizeViewportTransformDrag(false);
                 endViewportKeyframeEdit();
                 panel_->openFocalLengthEdit(
                     action->keyframe_index,
                     controller_.timeline().keyframes()[action->keyframe_index].focal_length_mm);
                 break;
             case Action::SET_TRANSLATE:
+                finalizeViewportTransformDrag(false);
                 endViewportKeyframeEdit();
                 cmd::SequencerSelectKeyframe{.keyframe_index = action->keyframe_index}.emit();
-                keyframe_gizmo_op_ = (keyframe_gizmo_op_ == ImGuizmo::TRANSLATE)
-                                         ? ImGuizmo::OPERATION(0)
-                                         : ImGuizmo::TRANSLATE;
+                viewport_edit_mode_ = (viewport_edit_mode_ == SequencerViewportEditMode::Translate)
+                                          ? SequencerViewportEditMode::None
+                                          : SequencerViewportEditMode::Translate;
+                if (auto* const rm = viewer_->getRenderingManager())
+                    rm->markDirty(DirtyFlag::OVERLAY);
                 break;
             case Action::SET_ROTATE:
+                finalizeViewportTransformDrag(false);
                 endViewportKeyframeEdit();
                 cmd::SequencerSelectKeyframe{.keyframe_index = action->keyframe_index}.emit();
-                keyframe_gizmo_op_ = (keyframe_gizmo_op_ == ImGuizmo::ROTATE)
-                                         ? ImGuizmo::OPERATION(0)
-                                         : ImGuizmo::ROTATE;
+                viewport_edit_mode_ = (viewport_edit_mode_ == SequencerViewportEditMode::Rotate)
+                                          ? SequencerViewportEditMode::None
+                                          : SequencerViewportEditMode::Rotate;
+                if (auto* const rm = viewer_->getRenderingManager())
+                    rm->markDirty(DirtyFlag::OVERLAY);
                 break;
             case Action::SET_EASING: {
                 const auto easing = static_cast<sequencer::EasingType>(action->easing_value);
@@ -907,12 +1040,16 @@ namespace lfs::vis::gui {
                 break;
             }
             case Action::DELETE_KEYFRAME:
+                viewport_edit_mode_ = SequencerViewportEditMode::None;
+                finalizeViewportTransformDrag(false);
                 endViewportKeyframeEdit();
                 cmd::SequencerSelectKeyframe{.keyframe_index = action->keyframe_index}.emit();
                 controller_.removeSelectedKeyframe();
                 state::KeyframeListChanged{.count = controller_.timeline().realKeyframeCount()}.emit();
                 break;
             case Action::CLOSE_EDIT_PANEL:
+                viewport_edit_mode_ = SequencerViewportEditMode::None;
+                finalizeViewportTransformDrag(false);
                 endViewportKeyframeEdit();
                 break;
             case Action::APPLY_EDIT:
@@ -956,386 +1093,6 @@ namespace lfs::vis::gui {
                 state::KeyframeListChanged{.count = controller_.timeline().realKeyframeCount()}.emit();
                 pip_needs_update_ = true;
             }
-        }
-    }
-
-    void SequencerUIManager::renderFilmStrip(const UIContext& ctx) {
-        if (!ui_state_.show_film_strip) {
-            if (film_strip_scrubbing_) {
-                film_strip_scrubbing_ = false;
-                controller_.endScrub();
-            }
-            return;
-        }
-
-        auto* const rm = ctx.viewer->getRenderingManager();
-        auto* const sm = ctx.viewer->getSceneManager();
-
-        const float timeline_x = tl_geo_.timeline_x;
-        const float timeline_width = tl_geo_.timeline_width;
-        const float px = tl_geo_.panel_x;
-        const float pw = tl_geo_.panel_width;
-        if (timeline_width <= 0.0f)
-            return;
-
-        const float strip_y = tl_geo_.panel_y + panel_->cachedHeight() +
-                              panel_config::EASING_STRIPE_HEIGHT * tl_geo_.dp -
-                              panel_config::BORDER_OVERLAP * tl_geo_.dp;
-
-        std::optional<float> selected_keyframe_time;
-        if (const auto selected = controller_.selectedKeyframe(); selected.has_value()) {
-            if (const auto* const keyframe = controller_.timeline().getKeyframe(*selected))
-                selected_keyframe_time = keyframe->time;
-        }
-
-        std::optional<float> hovered_keyframe_time;
-        if (const auto hovered_id = panel_->hoveredKeyframeId(); hovered_id.has_value()) {
-            if (const auto* const keyframe = controller_.timeline().getKeyframeById(*hovered_id))
-                hovered_keyframe_time = keyframe->time;
-        }
-
-        FilmStripRenderer::RenderOptions options;
-        options.panel_x = px;
-        options.panel_width = pw;
-        options.timeline_x = timeline_x;
-        options.timeline_width = timeline_width;
-        options.strip_y = strip_y;
-        const auto& input = panel_input_;
-        options.mouse_x = input.mouse_x;
-        options.mouse_y = input.mouse_y;
-        options.zoom_level = panel_->zoomLevel();
-        options.pan_offset = panel_->panOffset();
-        options.display_end_time = panel_->getDisplayEndTime();
-        options.selected_keyframe_id = controller_.selectedKeyframeId();
-        options.hovered_keyframe_id = panel_->hoveredKeyframeId();
-        options.selected_keyframe_time = selected_keyframe_time;
-        options.hovered_keyframe_time = hovered_keyframe_time;
-        film_strip_.render(controller_, rm, sm, options);
-
-        const bool can_scrub = controller_.timeline().size() >= 2;
-        const float scrub_time = can_scrub
-                                     ? std::clamp(
-                                           sequencer_ui::screenXToTime(input.mouse_x, timeline_x, timeline_width,
-                                                                       panel_->getDisplayEndTime(), panel_->panOffset()),
-                                           controller_.timeline().startTime(), controller_.timeline().endTime())
-                                     : 0.0f;
-
-        if (film_strip_scrubbing_) {
-            if (input.mouse_down[0] && can_scrub) {
-                controller_.scrub(scrub_time);
-            } else {
-                film_strip_scrubbing_ = false;
-                controller_.endScrub();
-            }
-        }
-
-        if (const auto& hover = film_strip_.hoverState(); hover.has_value()) {
-            guiFocusState().want_capture_mouse = true;
-
-            if (can_scrub && !overlay_->wantsInput() && !film_strip_scrubbing_ && input.mouse_clicked[0]) {
-                film_strip_scrubbing_ = true;
-                controller_.beginScrub();
-                controller_.scrub(scrub_time);
-            }
-
-            std::string tooltip = std::format("Time {}", formatTimelineTime(hover->exact_time));
-            if (hover->over_thumbnail) {
-                tooltip += std::format("\nSample {}", formatTimelineTime(hover->sample_time));
-                tooltip += std::format("\nCovers {} - {}",
-                                       formatTimelineTime(hover->interval_start_time),
-                                       formatTimelineTime(hover->interval_end_time));
-            }
-            timeline_tooltip_active_ = true;
-            timeline_tooltip_pos_ = {input.mouse_x, input.mouse_y};
-            timeline_tooltip_text_ = std::move(tooltip);
-        }
-    }
-
-    void SequencerUIManager::drawEasingCurves() {
-        const float dp = tl_geo_.dp;
-        const float px = tl_geo_.panel_x;
-        const float pw = tl_geo_.panel_width;
-        const float panel_y = tl_geo_.panel_y;
-        const float timeline_x = tl_geo_.timeline_x;
-        const float timeline_width = tl_geo_.timeline_width;
-        if (timeline_width <= 0.0f)
-            return;
-
-        const float stripe_y = panel_y + panel_->cachedHeight();
-        const float stripe_h = panel_config::EASING_STRIPE_HEIGHT * dp;
-        const float y_center = stripe_y + stripe_h * 0.5f;
-
-        auto* dl = ImGui::GetForegroundDrawList();
-
-        const auto& t = theme();
-        dl->AddRectFilled({px, stripe_y}, {px + pw, stripe_y + stripe_h},
-                          toU32WithAlpha(t.palette.surface, 0.85f),
-                          0.0f);
-        dl->AddLine({px, stripe_y}, {px + pw, stripe_y},
-                    toU32WithAlpha(t.palette.border, 0.3f));
-
-        const auto& timeline = controller_.timeline();
-        const auto& keyframes = timeline.keyframes();
-        if (keyframes.size() < 2)
-            return;
-
-        constexpr int CURVE_SAMPLES = 20;
-        constexpr float CURVE_THICKNESS = 1.5f;
-        constexpr float DOT_RADIUS = 3.0f;
-        constexpr float INDICATOR_SIZE = 4.0f;
-
-        const float pan = panel_->panOffset();
-        const float display_end = panel_->getDisplayEndTime();
-        const float amplitude = stripe_h * 0.35f;
-
-        const auto localTimeToX = [&](float time) -> float {
-            return sequencer_ui::timeToScreenX(time, timeline_x, timeline_width, display_end, pan);
-        };
-
-        dl->PushClipRect({timeline_x, stripe_y}, {timeline_x + timeline_width, stripe_y + stripe_h}, true);
-        const ImU32 colors[2] = {
-            toU32WithAlpha(t.palette.primary, 0.8f),
-            toU32WithAlpha(t.palette.secondary, 0.8f),
-        };
-        const ImU32 segment_fills[2] = {
-            toU32WithAlpha(t.palette.primary, 0.25f),
-            toU32WithAlpha(t.palette.secondary, 0.25f),
-        };
-        const ImU32 curve_color = toU32WithAlpha(t.palette.primary, 0.5f);
-
-        for (size_t i = 0; i + 1 < keyframes.size(); ++i) {
-            const float x0 = localTimeToX(keyframes[i].time);
-            const float x1 = localTimeToX(keyframes[i + 1].time);
-            dl->AddRectFilled({x0, stripe_y}, {x1, stripe_y + stripe_h}, segment_fills[i % 2]);
-        }
-
-        for (size_t i = 0; i + 1 < keyframes.size(); ++i) {
-            const auto& kf_a = keyframes[i];
-            const auto& kf_b = keyframes[i + 1];
-            const auto easing = kf_a.easing;
-            const float x0 = localTimeToX(kf_a.time);
-            const float x1 = localTimeToX(kf_b.time);
-
-            if (easing == sequencer::EasingType::LINEAR) {
-                dl->AddLine({x0, y_center}, {x1, y_center}, curve_color, CURVE_THICKNESS);
-                continue;
-            }
-
-            ImVec2 points[CURVE_SAMPLES + 1];
-            for (int s = 0; s <= CURVE_SAMPLES; ++s) {
-                const float t_norm = static_cast<float>(s) / static_cast<float>(CURVE_SAMPLES);
-                const float eased = sequencer::applyEasing(t_norm, easing);
-                const float x = x0 + t_norm * (x1 - x0);
-                const float y = y_center - (eased - t_norm) * amplitude;
-                points[s] = {x, y};
-            }
-            dl->AddPolyline(points, CURVE_SAMPLES + 1, curve_color, ImDrawFlags_None, CURVE_THICKNESS);
-        }
-
-        for (size_t i = 0; i < keyframes.size(); ++i) {
-            const float kx = localTimeToX(keyframes[i].time);
-            const ImU32 kf_color = colors[i % 2];
-            dl->AddCircleFilled({kx, y_center}, DOT_RADIUS, kf_color);
-
-            const auto easing = keyframes[i].easing;
-            if (easing == sequencer::EasingType::LINEAR)
-                continue;
-
-            const float iy = y_center - stripe_h * 0.3f;
-            switch (easing) {
-            case sequencer::EasingType::EASE_IN:
-                dl->AddTriangleFilled(
-                    {kx, iy},
-                    {kx + INDICATOR_SIZE, iy - INDICATOR_SIZE},
-                    {kx - INDICATOR_SIZE, iy - INDICATOR_SIZE},
-                    kf_color);
-                break;
-            case sequencer::EasingType::EASE_OUT:
-                dl->AddTriangleFilled(
-                    {kx - INDICATOR_SIZE, iy},
-                    {kx + INDICATOR_SIZE, iy},
-                    {kx, iy - INDICATOR_SIZE},
-                    kf_color);
-                break;
-            case sequencer::EasingType::EASE_IN_OUT:
-                dl->AddQuadFilled(
-                    {kx, iy - INDICATOR_SIZE},
-                    {kx + INDICATOR_SIZE, iy - INDICATOR_SIZE * 0.5f},
-                    {kx, iy},
-                    {kx - INDICATOR_SIZE, iy - INDICATOR_SIZE * 0.5f},
-                    kf_color);
-                break;
-            default:
-                break;
-            }
-        }
-
-        dl->PopClipRect();
-
-        const auto& input = panel_input_;
-        const float mx = input.mouse_x;
-        const float my = input.mouse_y;
-        if (mx >= timeline_x && mx <= timeline_x + timeline_width &&
-            my >= stripe_y && my <= stripe_y + stripe_h) {
-            guiFocusState().want_capture_mouse = true;
-
-            if (input.mouse_clicked[1]) {
-                std::optional<size_t> nearest;
-                float best_dist = panel_config::KEYFRAME_RADIUS * 3.0f * dp;
-                for (size_t i = 0; i < keyframes.size(); ++i) {
-                    const float dist = std::abs(mx - localTimeToX(keyframes[i].time));
-                    if (dist < best_dist) {
-                        best_dist = dist;
-                        nearest = i;
-                    }
-                }
-                overlay_->showContextMenu(mx, my, nearest,
-                                          nearest.has_value() ? keyframes[*nearest].time : controller_.playhead(),
-                                          keyframe_gizmo_op_);
-            }
-
-            if (input.mouse_clicked[0]) {
-                std::optional<size_t> nearest;
-                float best_dist = panel_config::KEYFRAME_RADIUS * 2.0f * dp;
-                for (size_t i = 0; i < keyframes.size(); ++i) {
-                    const float dist = std::abs(mx - localTimeToX(keyframes[i].time));
-                    if (dist < best_dist) {
-                        best_dist = dist;
-                        nearest = i;
-                    }
-                }
-                if (nearest.has_value())
-                    lfs::core::events::cmd::SequencerSelectKeyframe{.keyframe_index = *nearest}.emit();
-            }
-        }
-    }
-
-    void SequencerUIManager::drawTimelineGuides() {
-        if (tl_geo_.timeline_width <= 0.0f)
-            return;
-
-        const float dp = tl_geo_.dp;
-        const float panel_y = tl_geo_.panel_y;
-        const float line_top = panel_y + (panel_config::TRANSPORT_ROW_HEIGHT + panel_config::INNER_PADDING) * dp;
-        const float strip_offset = ui_state_.show_film_strip ? FilmStripRenderer::STRIP_HEIGHT : 0.0f;
-        const float line_bottom = panel_y + panel_->cachedHeight() +
-                                  (panel_config::EASING_STRIPE_HEIGHT - panel_config::BORDER_OVERLAP) * dp +
-                                  strip_offset;
-
-        auto* dl = ImGui::GetForegroundDrawList();
-        const auto& t = theme();
-        const float display_end = panel_->getDisplayEndTime();
-        const float pan = panel_->panOffset();
-
-        const auto timeToX = [&](const float time) -> float {
-            return sequencer_ui::timeToScreenX(time, tl_geo_.timeline_x, tl_geo_.timeline_width, display_end, pan);
-        };
-        const auto drawTimedGuide = [&](const float time, const ImU32 color, const float thickness) {
-            const float x = timeToX(time);
-            if (x < tl_geo_.timeline_x || x > tl_geo_.timeline_x + tl_geo_.timeline_width)
-                return;
-            drawGuideLine(dl, x, line_top, line_bottom, color, thickness);
-        };
-
-        if (ui_state_.show_film_strip) {
-            if (const auto& hover = film_strip_.hoverState(); hover.has_value()) {
-                drawGuideLine(dl, hover->guide_x, line_top, line_bottom,
-                              toU32WithAlpha(t.palette.text_dim, 0.55f), 1.0f);
-            }
-        }
-
-        if (const auto hovered_id = panel_->hoveredKeyframeId(); hovered_id.has_value()) {
-            if (const auto* const keyframe = controller_.timeline().getKeyframeById(*hovered_id)) {
-                drawTimedGuide(keyframe->time, toU32WithAlpha(t.palette.secondary, 0.75f), 1.5f);
-            }
-        }
-
-        if (const auto selected = controller_.selectedKeyframe(); selected.has_value()) {
-            if (const auto* const keyframe = controller_.timeline().getKeyframe(*selected)) {
-                drawTimedGuide(keyframe->time, toU32WithAlpha(t.palette.primary, 0.85f), 2.0f);
-            }
-        }
-
-        if (panel_->isPlayheadInRange()) {
-            drawGuideLine(dl, panel_->cachedPlayheadScreenX(), line_top, line_bottom,
-                          theme().error_u32(), panel_config::PLAYHEAD_WIDTH);
-        }
-    }
-
-    void SequencerUIManager::drawTimelineTooltip() {
-        if (!timeline_tooltip_active_ || timeline_tooltip_text_.empty())
-            return;
-
-        auto* const dl = ImGui::GetForegroundDrawList();
-        const auto& t = theme();
-        const float dp = std::max(tl_geo_.dp, 1.0f);
-        const float pad_x = 10.0f * dp;
-        const float pad_y = 7.0f * dp;
-        const float line_gap = 2.0f * dp;
-        const float offset_x = 14.0f * dp;
-        const float offset_y = -10.0f * dp;
-
-        std::vector<std::string_view> lines;
-        size_t start = 0;
-        while (start <= timeline_tooltip_text_.size()) {
-            const size_t end = timeline_tooltip_text_.find('\n', start);
-            if (end == std::string::npos) {
-                lines.emplace_back(timeline_tooltip_text_.data() + start, timeline_tooltip_text_.size() - start);
-                break;
-            }
-            lines.emplace_back(timeline_tooltip_text_.data() + start, end - start);
-            start = end + 1;
-        }
-
-        float max_width = 0.0f;
-        float total_height = pad_y * 2.0f;
-        for (size_t i = 0; i < lines.size(); ++i) {
-            const ImVec2 size = ImGui::CalcTextSize(lines[i].data(), lines[i].data() + lines[i].size());
-            max_width = std::max(max_width, size.x);
-            total_height += size.y;
-            if (i + 1 < lines.size())
-                total_height += line_gap;
-        }
-
-        const glm::ivec2 display_size = viewer_->getWindowManager()->getWindowSize();
-        const ImVec2 display(static_cast<float>(display_size.x),
-                             static_cast<float>(display_size.y));
-        ImVec2 box_min(timeline_tooltip_pos_.x + offset_x, timeline_tooltip_pos_.y + offset_y - total_height);
-        ImVec2 box_max(box_min.x + max_width + pad_x * 2.0f, box_min.y + total_height);
-
-        if (box_max.x > display.x - 8.0f * dp) {
-            const float shift = box_max.x - (display.x - 8.0f * dp);
-            box_min.x -= shift;
-            box_max.x -= shift;
-        }
-        if (box_min.x < 8.0f * dp) {
-            const float shift = 8.0f * dp - box_min.x;
-            box_min.x += shift;
-            box_max.x += shift;
-        }
-        if (box_min.y < 8.0f * dp) {
-            const float shift = (timeline_tooltip_pos_.y + 18.0f * dp) - box_min.y;
-            box_min.y += shift;
-            box_max.y += shift;
-        }
-
-        dl->AddRectFilled({box_min.x + 2.0f * dp, box_min.y + 3.0f * dp},
-                          {box_max.x + 2.0f * dp, box_max.y + 3.0f * dp},
-                          IM_COL32(0, 0, 0, 60), 8.0f * dp);
-        dl->AddRectFilled(box_min, box_max,
-                          toU32WithAlpha(t.palette.surface, 0.96f), 8.0f * dp);
-        dl->AddRect(box_min, box_max,
-                    toU32WithAlpha(t.palette.border, 0.75f), 8.0f * dp, 0, 1.0f);
-
-        float text_y = box_min.y + pad_y;
-        for (size_t i = 0; i < lines.size(); ++i) {
-            const ImVec2 size = ImGui::CalcTextSize(lines[i].data(), lines[i].data() + lines[i].size());
-            const ImU32 color = (i == 0)
-                                    ? t.text_u32()
-                                    : toU32WithAlpha(t.palette.text_dim, 0.95f);
-            dl->AddText({box_min.x + pad_x, text_y}, color,
-                        lines[i].data(), lines[i].data() + lines[i].size());
-            text_y += size.y + line_gap;
         }
     }
 
@@ -1447,49 +1204,45 @@ namespace lfs::vis::gui {
         }
     }
 
-    void SequencerUIManager::drawPipPreviewWindow(const ViewportLayout& viewport) {
-        if (!ui_state_.show_pip_preview)
+    void SequencerUIManager::syncPipPreviewWindow(const ViewportLayout& viewport) {
+        if (!overlay_)
             return;
+
+        if (!ui_state_.show_pip_preview) {
+            overlay_->hidePreviewWindow();
+            return;
+        }
 
         const bool is_playing = !controller_.isStopped();
         const auto selected = controller_.selectedKeyframe();
 
-        if (!pip_initialized_ || pip_texture_ == 0)
+        if (!pip_initialized_ || pip_texture_ == 0) {
+            overlay_->hidePreviewWindow();
             return;
+        }
 
         if (!is_playing && selected.has_value()) {
             const auto& timeline = controller_.timeline();
-            if (*selected >= timeline.size())
+            if (*selected >= timeline.size()) {
+                overlay_->hidePreviewWindow();
                 return;
+            }
             const auto* const kf = timeline.getKeyframe(*selected);
-            if (!kf || kf->is_loop_point)
+            if (!kf || kf->is_loop_point) {
+                overlay_->hidePreviewWindow();
                 return;
+            }
         }
 
-        const auto& t = theme();
         const float scale = ui_state_.pip_preview_scale;
         constexpr float MARGIN = 16.0f;
-        constexpr float PADDING = 4.0f;
         constexpr float TITLE_HEIGHT = 18.0f;
         const float scaled_width = static_cast<float>(PREVIEW_WIDTH) * scale;
         const float scaled_height = static_cast<float>(PREVIEW_HEIGHT) * scale;
-        const float total_height = scaled_height + TITLE_HEIGHT + PADDING * 2.0f;
+        const float total_height = scaled_height + TITLE_HEIGHT + 8.0f;
 
-        const ImVec2 pos(
-            viewport.pos.x + MARGIN,
-            panel_->cachedPanelY() - total_height - MARGIN);
-        const ImVec2 size(scaled_width + PADDING * 2.0f, total_height);
-
-        const ImU32 bg_color = toU32WithAlpha(t.palette.surface, 0.95f);
-        const ImU32 border_color = is_playing
-                                       ? t.error_u32()
-                                       : toU32WithAlpha(t.palette.primary, 0.6f);
-        const ImU32 text_color = toU32WithAlpha(t.palette.text, 0.8f);
-
-        auto* dl = ImGui::GetForegroundDrawList();
-        const ImVec2 p1(pos.x + size.x, pos.y + size.y);
-        dl->AddRectFilled(pos, p1, bg_color, t.sizes.window_rounding);
-        dl->AddRect(pos, p1, border_color, t.sizes.window_rounding, 0, 2.0f);
+        const float left = viewport.pos.x + MARGIN;
+        const float top = panel_->cachedPanelY() - total_height - MARGIN;
 
         const float playhead = controller_.playhead();
         const std::string title = (is_playing || !selected.has_value())
@@ -1500,12 +1253,9 @@ namespace lfs::vis::gui {
                                             return std::vformat(LOC(lichtfeld::Strings::Sequencer::KEYFRAME_PREVIEW),
                                                                 std::make_format_args(kf_num));
                                         }();
-        dl->AddText({pos.x + PADDING, pos.y + PADDING}, text_color, title.c_str());
 
-        const ImVec2 img_pos(pos.x + PADDING, pos.y + PADDING + TITLE_HEIGHT);
-        const ImVec2 img_end(img_pos.x + scaled_width, img_pos.y + scaled_height);
-        dl->AddImage(static_cast<ImTextureID>(static_cast<uintptr_t>(pip_texture_.get())),
-                     img_pos, img_end, {0, 1}, {1, 0});
+        overlay_->showPreviewWindow(left, top, scaled_width, scaled_height,
+                                    title, is_playing, pip_texture_.get());
     }
 
     void SequencerUIManager::renderKeyframeEditOverlay(const ViewportLayout& viewport) {

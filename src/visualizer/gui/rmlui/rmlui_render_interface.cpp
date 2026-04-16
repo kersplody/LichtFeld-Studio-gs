@@ -72,6 +72,14 @@ namespace lfs::vis::gui {
         bool failed = false;
     };
 
+    struct ExternalTextureEntry {
+        GLuint texture_id = 0;
+        int width = 1;
+        int height = 1;
+        int ref_count = 0;
+        std::string source;
+    };
+
     struct PreviewTextureCache {
         static constexpr int NUM_WORKERS = 4;
         static constexpr int NUM_HIGH_PRIORITY_WORKERS = 1;
@@ -79,6 +87,8 @@ namespace lfs::vis::gui {
         std::unique_ptr<lfs::io::PipelinedImageLoader> preview_loader;
         std::unordered_map<Rml::TextureHandle, PreviewTextureEntry> preview_entries;
         std::unordered_map<std::string, Rml::TextureHandle> source_to_handle;
+        std::unordered_map<Rml::TextureHandle, ExternalTextureEntry> external_entries;
+        std::unordered_map<std::string, Rml::TextureHandle> external_source_to_handle;
         std::deque<PreviewLoadRequest> high_priority_queue;
         std::deque<PreviewLoadRequest> low_priority_queue;
         std::mutex load_queue_mutex;
@@ -612,8 +622,85 @@ namespace lfs::vis::gui {
         preview_cache_->evict_unused_textures();
     }
 
+    void RmlRenderInterface::register_external_texture(const Rml::String& source,
+                                                       const unsigned int texture_id,
+                                                       const int width,
+                                                       const int height) {
+        if (!preview_cache_ || source.empty() || texture_id == 0)
+            return;
+
+        const auto handle = static_cast<Rml::TextureHandle>(texture_id);
+
+        if (const auto source_it = preview_cache_->external_source_to_handle.find(source);
+            source_it != preview_cache_->external_source_to_handle.end() && source_it->second != handle) {
+            if (auto old_entry_it = preview_cache_->external_entries.find(source_it->second);
+                old_entry_it != preview_cache_->external_entries.end()) {
+                if (old_entry_it->second.ref_count <= 0)
+                    preview_cache_->external_entries.erase(old_entry_it);
+                else
+                    old_entry_it->second.source.clear();
+            }
+        }
+
+        auto& entry = preview_cache_->external_entries[handle];
+        if (!entry.source.empty() && entry.source != source) {
+            if (const auto old_source_it = preview_cache_->external_source_to_handle.find(entry.source);
+                old_source_it != preview_cache_->external_source_to_handle.end() && old_source_it->second == handle) {
+                preview_cache_->external_source_to_handle.erase(old_source_it);
+            }
+        }
+
+        entry.texture_id = texture_id;
+        entry.width = width;
+        entry.height = height;
+        entry.source = std::string{source};
+        preview_cache_->external_source_to_handle[entry.source] = handle;
+    }
+
+    void RmlRenderInterface::unregister_external_texture(const Rml::String& source) {
+        if (!preview_cache_ || source.empty())
+            return;
+
+        const auto source_it = preview_cache_->external_source_to_handle.find(source);
+        if (source_it == preview_cache_->external_source_to_handle.end())
+            return;
+
+        const auto handle = source_it->second;
+        preview_cache_->external_source_to_handle.erase(source_it);
+
+        if (auto entry_it = preview_cache_->external_entries.find(handle);
+            entry_it != preview_cache_->external_entries.end()) {
+            if (entry_it->second.ref_count <= 0)
+                preview_cache_->external_entries.erase(entry_it);
+            else
+                entry_it->second.source.clear();
+        }
+    }
+
+    bool RmlRenderInterface::is_external_texture(const Rml::TextureHandle texture_handle) const {
+        return preview_cache_ && preview_cache_->external_entries.contains(texture_handle);
+    }
+
+    void RmlRenderInterface::RenderGeometry(const Rml::CompiledGeometryHandle handle,
+                                            const Rml::Vector2f translation,
+                                            const Rml::TextureHandle texture) {
+        const bool external_texture = is_external_texture(texture);
+        if (external_texture) {
+            glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA,
+                                GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+        }
+
+        RenderInterface_GL3::RenderGeometry(handle, translation, texture);
+
+        if (external_texture)
+            glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+    }
+
     Rml::TextureHandle RmlRenderInterface::LoadTexture(Rml::Vector2i& dimensions,
                                                        const Rml::String& source) {
+        if (const auto external_handle = load_external_texture(dimensions, source); external_handle)
+            return external_handle;
+
         constexpr std::string_view PREVIEW_PREFIX = "preview://";
         if (source.size() > PREVIEW_PREFIX.size() &&
             source.substr(0, PREVIEW_PREFIX.size()) == PREVIEW_PREFIX) {
@@ -667,6 +754,17 @@ namespace lfs::vis::gui {
 
     void RmlRenderInterface::ReleaseTexture(Rml::TextureHandle texture_handle) {
         if (preview_cache_) {
+            auto external_it = preview_cache_->external_entries.find(texture_handle);
+            if (external_it != preview_cache_->external_entries.end()) {
+                auto& entry = external_it->second;
+                entry.ref_count = std::max(0, entry.ref_count - 1);
+                if (entry.ref_count == 0 && entry.source.empty())
+                    preview_cache_->external_entries.erase(external_it);
+                return;
+            }
+        }
+
+        if (preview_cache_) {
             auto it = preview_cache_->preview_entries.find(texture_handle);
             if (it != preview_cache_->preview_entries.end()) {
                 auto& entry = it->second;
@@ -683,6 +781,27 @@ namespace lfs::vis::gui {
         }
         GLuint tex = static_cast<GLuint>(texture_handle);
         glDeleteTextures(1, &tex);
+    }
+
+    Rml::TextureHandle RmlRenderInterface::load_external_texture(Rml::Vector2i& dimensions,
+                                                                 const Rml::String& source) {
+        if (!preview_cache_)
+            return 0;
+
+        const auto source_it = preview_cache_->external_source_to_handle.find(source);
+        if (source_it == preview_cache_->external_source_to_handle.end())
+            return 0;
+
+        const auto handle = source_it->second;
+        const auto entry_it = preview_cache_->external_entries.find(handle);
+        if (entry_it == preview_cache_->external_entries.end())
+            return 0;
+
+        auto& entry = entry_it->second;
+        ++entry.ref_count;
+        dimensions.x = entry.width;
+        dimensions.y = entry.height;
+        return handle;
     }
 
     Rml::TextureHandle RmlRenderInterface::load_preview_texture(Rml::Vector2i& dimensions,

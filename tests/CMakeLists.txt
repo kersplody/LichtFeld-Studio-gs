@@ -271,6 +271,7 @@ set(TEST_FILES
     test_ppisp_cuda_vs_torch.cpp
     test_controller_memory.cpp
     test_undistort.cpp
+    test_viewport_region_utils.cpp
     test_mesh_data.cpp
     test_openmesh_bridge.cpp
     test_mesh_loader.cpp

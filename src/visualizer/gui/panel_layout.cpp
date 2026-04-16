@@ -436,7 +436,8 @@ namespace lfs::vis::gui {
         if (!(show_main_panel && !ui_hidden))
             return screen.work_size.x;
 
-        return std::max(0.0f, screen.work_size.x - right_panel_width_ - console_w - PANEL_GAP);
+        const float viewport_gap = python_console_visible ? PANEL_GAP : 0.0f;
+        return std::max(0.0f, screen.work_size.x - right_panel_width_ - console_w - viewport_gap);
     }
 
     float PanelLayoutManager::computeBottomDockWidth(const bool show_main_panel,
@@ -444,13 +445,15 @@ namespace lfs::vis::gui {
                                                      const ScreenState& screen) const {
         if (!(show_main_panel && !ui_hidden))
             return screen.work_size.x;
-        return std::max(0.0f, screen.work_size.x - right_panel_width_ - PANEL_GAP);
+        return std::max(0.0f, screen.work_size.x - right_panel_width_);
     }
 
     float PanelLayoutManager::computeBottomDockReservedHeight(const bool show_main_panel,
                                                               const bool ui_hidden,
                                                               const ScreenState& screen) const {
-        if (!show_main_panel || ui_hidden || !bottom_dock_visible_)
+        const bool has_docked_bottom_panel =
+            show_sequencer_ && PanelRegistry::instance().has_panels(PanelSpace::BottomDock);
+        if (!show_main_panel || ui_hidden || !has_docked_bottom_panel)
             return 0.0f;
 
         const float dpi = lfs::python::get_shared_dpi_scale();
