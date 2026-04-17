@@ -62,12 +62,20 @@ namespace lfs::vis::gui {
             return value.empty() ? std::string(key) : value;
         }
 
+        [[nodiscard]] std::string formatWithThousands(const uint64_t value) {
+            std::string result = std::to_string(value);
+            for (int i = static_cast<int>(result.length()) - 3; i > 0; i -= 3)
+                result.insert(i, ",");
+            return result;
+        }
+
         [[nodiscard]] std::string formatLocalizedCount(std::string pattern, const size_t count) {
+            const std::string formatted = formatWithThousands(count);
             if (const size_t pos = pattern.find("{}"); pos != std::string::npos) {
-                pattern.replace(pos, 2, std::to_string(count));
+                pattern.replace(pos, 2, formatted);
                 return pattern;
             }
-            return std::format("{} ({})", pattern, count);
+            return std::format("{} ({})", pattern, formatted);
         }
 
         [[nodiscard]] std::string lowerCopy(std::string value) {
@@ -578,21 +586,21 @@ namespace lfs::vis::gui {
             case core::NodeType::SPLAT:
                 if (const auto it = active_gaussian_counts.find(node->id);
                     it != active_gaussian_counts.end() && it->second > 0) {
-                    snapshot.label = std::format("{}  ({})", node->name, it->second);
+                    snapshot.label = std::format("{}  ({})", node->name, formatWithThousands(it->second));
                 } else {
                     snapshot.label = node->name;
                 }
                 break;
             case core::NodeType::POINTCLOUD:
                 snapshot.label = (node->point_cloud && node->point_cloud->size() > 0)
-                                     ? std::format("{}  ({})", node->name, node->point_cloud->size())
+                                     ? std::format("{}  ({})", node->name, formatWithThousands(node->point_cloud->size()))
                                      : node->name;
                 break;
             case core::NodeType::MESH:
                 snapshot.label = (node->mesh)
                                      ? std::format("{}  ({}V / {}F)", node->name,
-                                                   node->mesh->vertex_count(),
-                                                   node->mesh->face_count())
+                                                   formatWithThousands(node->mesh->vertex_count()),
+                                                   formatWithThousands(node->mesh->face_count()))
                                      : node->name;
                 break;
             case core::NodeType::KEYFRAME:
