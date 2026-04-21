@@ -358,11 +358,22 @@ jobs:
 
           endpoint_url="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
           versioned_key="windows/nightly/${FILE_NAME}"
+          checksum_file="${FILE_NAME}.sha256"
+          checksum_key="${versioned_key}.sha256"
+          sha256sum "$FILE_NAME" > "$checksum_file"
+          checksum="$(cut -d ' ' -f 1 "$checksum_file")"
 
+          aws s3 cp "$checksum_file" "s3://${R2_BUCKET}/${checksum_key}" \
+            --endpoint-url "$endpoint_url" \
+            --content-type text/plain \
+            --only-show-errors
           aws s3 cp "$FILE_NAME" "s3://${R2_BUCKET}/${versioned_key}" \
             --endpoint-url "$endpoint_url" \
             --content-type application/zip \
             --only-show-errors
+
+          echo "SHA256_CHECKSUM=${checksum}" >> "$GITHUB_ENV"
+          echo "SHA256_OBJECT_KEY=${checksum_key}" >> "$GITHUB_ENV"
 
       - name: Publish summary
         env:
@@ -381,6 +392,8 @@ jobs:
             echo "- Commit: \`${FULL_SHA}\`"
             echo "- Built at: \`${BUILT_AT}\`"
             echo "- Object key: \`windows/nightly/${FILE_NAME}\`"
+            echo "- SHA-256: \`${SHA256_CHECKSUM:-not generated}\`"
+            echo "- SHA-256 object key: \`${SHA256_OBJECT_KEY:-not generated}\`"
             if [ -n "${R2_PUBLIC_BASE_URL:-}" ]; then
               base_url="${R2_PUBLIC_BASE_URL%/}"
               echo "- Versioned URL: ${base_url}/windows/nightly/${FILE_NAME}"
