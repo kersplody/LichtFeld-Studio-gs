@@ -192,6 +192,7 @@ namespace {
             ::args::Group output_sep(parser, " ");
             ::args::Group output_group(parser, "OUTPUT OPTIONS:");
             ::args::Flag enable_eval(output_group, "eval", "Enable evaluation during training", {"eval"});
+            ::args::Flag eval_final_checkpoint(output_group, "eval_final_checkpoint", "Run evaluation on the final checkpoint even if it is not in eval_steps", {"eval-final", "eval-final-checkpoint"});
             ::args::Flag enable_save_eval_images(output_group, "save_eval_images", "Save evaluation comparison images (GT vs rendered)", {"save-eval-images"});
             ::args::Flag save_depth(output_group, "save_depth", "[TODO] Save depth maps during training (not yet implemented)", {"save-depth"});
             ::args::ValueFlagList<std::string> timelapse_images(output_group, "timelapse_images", "Image filenames to render timelapse images for", {"timelapse-images"});
@@ -552,6 +553,7 @@ namespace {
                                         ppisp_freeze_from_sidecar_flag = bool(ppisp_freeze_from_sidecar),
                                         ppisp_sidecar_path_val = cli_option_present({"--ppisp-sidecar"}) ? std::optional<std::string>(::args::get(ppisp_sidecar_path)) : std::optional<std::string>(),
                                         enable_eval_flag = bool(enable_eval),
+                                        eval_final_checkpoint_flag = bool(eval_final_checkpoint),
                                         headless_flag = bool(headless),
                                         auto_train_flag = bool(auto_train),
 #ifdef LFS_BUILD_PORTABLE
@@ -628,6 +630,9 @@ namespace {
                 if (opt.ppisp_freeze_from_sidecar)
                     opt.use_ppisp = true;
                 setFlag(enable_eval_flag, opt.enable_eval);
+                setFlag(eval_final_checkpoint_flag, opt.eval_final_checkpoint);
+                if (opt.eval_final_checkpoint)
+                    opt.enable_eval = true;
                 setFlag(headless_flag, opt.headless);
                 setFlag(auto_train_flag, opt.auto_train);
                 setFlag(no_splash_flag, opt.no_splash);

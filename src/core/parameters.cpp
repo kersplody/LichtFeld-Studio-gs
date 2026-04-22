@@ -116,6 +116,7 @@ namespace lfs::core {
             opt_json["eval_steps"] = eval_steps;
             opt_json["save_steps"] = save_steps;
             opt_json["enable_eval"] = enable_eval;
+            opt_json["eval_final_checkpoint"] = eval_final_checkpoint;
             opt_json["enable_save_eval_images"] = enable_save_eval_images;
             opt_json["headless"] = headless;
             const auto canonical_strategy = canonical_strategy_name(strategy);
@@ -327,6 +328,12 @@ namespace lfs::core {
 
             if (json.contains("enable_eval")) {
                 params.enable_eval = json["enable_eval"];
+            }
+            if (json.contains("eval_final_checkpoint")) {
+                params.eval_final_checkpoint = json["eval_final_checkpoint"];
+                if (params.eval_final_checkpoint) {
+                    params.enable_eval = true;
+                }
             }
             if (json.contains("enable_save_eval_images")) {
                 params.enable_save_eval_images = json["enable_save_eval_images"];

@@ -397,11 +397,15 @@ function Setup-GitSubmodules {
     try {
         # Check if libvterm submodule is initialized
         $LibvtermPath = Join-Path $ProjectRoot "external\libvterm"
-        if (-not (Test-Path (Join-Path $LibvtermPath "src"))) {
+        $LibvtermSourceFile = Join-Path $LibvtermPath "src\encoding.c"
+        if (-not (Test-Path $LibvtermSourceFile)) {
             Write-Host "Initializing git submodules..." -ForegroundColor Yellow
-            git submodule update --init --recursive
+            git submodule update --init --recursive external/libvterm
             if ($LASTEXITCODE -ne 0) {
-                Write-Host "WARNING: Failed to initialize submodules" -ForegroundColor Yellow
+                throw "Failed to initialize external/libvterm. Run 'git submodule update --init --recursive external/libvterm' from $ProjectRoot, then retry the build."
+            }
+            if (-not (Test-Path $LibvtermSourceFile)) {
+                throw "external/libvterm is still incomplete after submodule initialization. Missing: $LibvtermSourceFile"
             } else {
                 Write-Host "Git submodules initialized successfully!" -ForegroundColor Green
             }

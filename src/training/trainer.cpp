@@ -3594,12 +3594,27 @@ namespace lfs::training {
                 cudaStreamSynchronize(callback_stream_);
             }
 
+            const bool completed_normally = !stop_requested_.load() && !stop_token.stop_requested();
+
             // Final save if not already saved by stop request
-            if (!stop_requested_.load() && !stop_token.stop_requested()) {
+            if (completed_normally) {
                 auto final_path = params_.dataset.output_path;
                 const bool rotate_checkpoint = get_active_sparsify_steps() == 0;
                 save_ply(final_path, params_.dataset.output_name, get_total_iterations(), /*join=*/true,
                          /*save_checkpoint=*/rotate_checkpoint);
+            }
+
+            if (completed_normally &&
+                params_.optimization.eval_final_checkpoint &&
+                evaluator_ &&
+                evaluator_->is_enabled() &&
+                !evaluator_->should_evaluate(get_total_iterations())) {
+                evaluator_->print_evaluation_header(get_total_iterations());
+                auto metrics = evaluator_->evaluate(get_total_iterations(),
+                                                    strategy_->get_model(),
+                                                    val_dataset_,
+                                                    background_);
+                LOG_INFO("Final checkpoint metrics: {}", metrics.to_string());
             }
 
             maybe_publish_camera_loss_heatmap(current_iteration_.load(), true);

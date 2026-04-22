@@ -128,6 +128,7 @@ namespace lfs::core {
             std::vector<size_t> save_steps = {7'000, 30'000};  // Steps to save the model
             bool bg_modulation = false;                        // Enable sinusoidal background modulation
             bool enable_eval = false;                          // Only evaluate when explicitly enabled
+            bool eval_final_checkpoint = false;                // Always evaluate the final checkpoint
             bool enable_save_eval_images = true;               // Save during evaluation images
             bool headless = false;                             // Disable visualization during training
             bool auto_train = false;                           // Start training immediately on startup
