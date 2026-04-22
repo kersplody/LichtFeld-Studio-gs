@@ -537,6 +537,7 @@ _add_dll_dirs()
                         return;
                     }
 
+                    PyStatus st = PyStatus_Ok();
                     auto append_search_path = [&](const std::filesystem::path& path) {
                         const auto path_wstr = path.wstring();
                         st = PyWideStringList_Append(&config.module_search_paths, path_wstr.c_str());
@@ -549,7 +550,6 @@ _add_dll_dirs()
                         return true;
                     };
 
-                    PyStatus st = PyStatus_Ok();
                     const auto exe_dir = lfs::core::getExecutableDir();
                     const auto version_zip = std::string("python") +
                                              std::to_string(PY_MAJOR_VERSION) +
