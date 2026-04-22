@@ -1028,6 +1028,55 @@ if(TARGET nvimgcodec)
     endif()
 endif()
 
+# Linux install payload sanity copy. This mirrors the runtime layout used by the
+# build tree so manually assembled installs under prefixes such as /opt/lfs have
+# the Python extension, support modules, vcpkg shared libs, and Python stdlib.
+if(UNIX AND NOT APPLE AND DEFINED VCPKG_TARGET_TRIPLET)
+    install(CODE "
+        set(_lfs_prefix \"\${CMAKE_INSTALL_PREFIX}\")
+        set(_lfs_libdir \"\${_lfs_prefix}/${CMAKE_INSTALL_LIBDIR}\")
+        set(_lfs_build_dir \"${CMAKE_BINARY_DIR}\")
+        set(_lfs_triplet \"${VCPKG_TARGET_TRIPLET}\")
+        file(MAKE_DIRECTORY \"\${_lfs_libdir}\")
+
+        set(_lfs_rmlui \"\${_lfs_build_dir}/liblfs_rmlui.so\")
+        if(EXISTS \"\${_lfs_rmlui}\")
+            file(INSTALL \"\${_lfs_rmlui}\" DESTINATION \"\${_lfs_libdir}\")
+        endif()
+
+        set(_lfs_vcpkg_libdir \"\${_lfs_build_dir}/vcpkg_installed/\${_lfs_triplet}/lib\")
+        if(EXISTS \"\${_lfs_vcpkg_libdir}\")
+            file(GLOB _lfs_vcpkg_shared \"\${_lfs_vcpkg_libdir}/*.so\" \"\${_lfs_vcpkg_libdir}/*.so.*\")
+            foreach(_lfs_vcpkg_lib IN LISTS _lfs_vcpkg_shared)
+                file(INSTALL \"\${_lfs_vcpkg_lib}\" DESTINATION \"\${_lfs_libdir}\" FOLLOW_SYMLINK_CHAIN)
+            endforeach()
+        endif()
+
+        set(_lfs_built_python \"\${_lfs_build_dir}/src/python\")
+        if(EXISTS \"\${_lfs_built_python}\")
+            file(INSTALL DESTINATION \"\${_lfs_libdir}/python\" TYPE DIRECTORY FILES \"\${_lfs_built_python}/\"
+                PATTERN \"__pycache__\" EXCLUDE
+                PATTERN \"*.pyc\" EXCLUDE)
+        endif()
+
+        set(_lfs_vcpkg_python \"\${_lfs_vcpkg_libdir}/python3.12\")
+        if(EXISTS \"\${_lfs_vcpkg_python}\")
+            file(INSTALL DESTINATION \"\${_lfs_libdir}/python3.12\" TYPE DIRECTORY FILES \"\${_lfs_vcpkg_python}/\"
+                PATTERN \"__pycache__\" EXCLUDE
+                PATTERN \"*.pyc\" EXCLUDE
+                PATTERN \"test\" EXCLUDE
+                PATTERN \"tests\" EXCLUDE
+                PATTERN \"idle_test\" EXCLUDE
+                PATTERN \"tkinter\" EXCLUDE
+                PATTERN \"turtledemo\" EXCLUDE
+                PATTERN \"idlelib\" EXCLUDE
+                PATTERN \"lib2to3\" EXCLUDE
+                PATTERN \"ensurepip\" EXCLUDE
+                PATTERN \"unittest\" EXCLUDE)
+        endif()
+    " COMPONENT runtime)
+endif()
+
 # Portable build: bundle runtime dependencies via GET_RUNTIME_DEPENDENCIES
 if(BUILD_PORTABLE)
     # Exclusion patterns for system libraries
