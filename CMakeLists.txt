@@ -496,14 +496,101 @@ if(TARGET nvimgcodec)
     message(STATUS "Post-build: nvImageCodec libraries will be copied to executable directory")
 endif()
 
-# Copy Python DLLs for Windows runtime (Python is embedded in the application)
+# Copy Python runtime files for Windows build-tree runs. Linux can discover the
+# vcpkg Python tree from build/vcpkg_installed; Windows executables live in
+# build/<Config>/, so keep an adjacent embedded runtime available there too.
 if(WIN32)
     get_filename_component(VCPKG_PYTHON_DIR "${Python_EXECUTABLE}" DIRECTORY)
+    set(PYTHON_STDLIB_CANDIDATES
+        "${CMAKE_BINARY_DIR}/vcpkg_installed/${VCPKG_TARGET_TRIPLET}/tools/python3/Lib"
+        "${VCPKG_PYTHON_DIR}/../tools/python3/Lib"
+        "${VCPKG_PYTHON_DIR}/../../tools/python3/Lib"
+        "${VCPKG_PYTHON_DIR}/Lib"
+        "${Python_STDLIB}"
+    )
+    set(PYTHON_DLLS_DIR_CANDIDATES
+        "${CMAKE_BINARY_DIR}/vcpkg_installed/${VCPKG_TARGET_TRIPLET}/tools/python3/DLLs"
+        "${VCPKG_PYTHON_DIR}/../tools/python3/DLLs"
+        "${VCPKG_PYTHON_DIR}/../../tools/python3/DLLs"
+        "${VCPKG_PYTHON_DIR}/DLLs"
+    )
+    set(PYTHON_RUNTIME_EXE_CANDIDATES
+        "${CMAKE_BINARY_DIR}/vcpkg_installed/${VCPKG_TARGET_TRIPLET}/tools/python3/python.exe"
+        "${VCPKG_PYTHON_DIR}/../tools/python3/python.exe"
+        "${VCPKG_PYTHON_DIR}/../../tools/python3/python.exe"
+        "${VCPKG_PYTHON_DIR}/python.exe"
+        "${Python_EXECUTABLE}"
+    )
+
+    set(PYTHON_RUNTIME_EXE "")
+    foreach(PYTHON_RUNTIME_EXE_CANDIDATE IN LISTS PYTHON_RUNTIME_EXE_CANDIDATES)
+        if(EXISTS "${PYTHON_RUNTIME_EXE_CANDIDATE}")
+            set(PYTHON_RUNTIME_EXE "${PYTHON_RUNTIME_EXE_CANDIDATE}")
+            break()
+        endif()
+    endforeach()
+
+    set(PYTHON_RUNTIME_STDLIB "")
+    foreach(PYTHON_STDLIB_CANDIDATE IN LISTS PYTHON_STDLIB_CANDIDATES)
+        if(EXISTS "${PYTHON_STDLIB_CANDIDATE}/encodings/__init__.py")
+            set(PYTHON_RUNTIME_STDLIB "${PYTHON_STDLIB_CANDIDATE}")
+            break()
+        endif()
+    endforeach()
+
+    set(PYTHON_RUNTIME_DLLS_DIR "")
+    foreach(PYTHON_DLLS_DIR_CANDIDATE IN LISTS PYTHON_DLLS_DIR_CANDIDATES)
+        if(EXISTS "${PYTHON_DLLS_DIR_CANDIDATE}")
+            set(PYTHON_RUNTIME_DLLS_DIR "${PYTHON_DLLS_DIR_CANDIDATE}")
+            break()
+        endif()
+    endforeach()
+
+    if(NOT PYTHON_RUNTIME_EXE)
+        message(FATAL_ERROR "Windows Python runtime executable not found. Checked: ${PYTHON_RUNTIME_EXE_CANDIDATES}")
+    endif()
+    if(NOT PYTHON_RUNTIME_STDLIB)
+        message(FATAL_ERROR "Windows Python stdlib not found. Checked: ${PYTHON_STDLIB_CANDIDATES}")
+    endif()
+    get_filename_component(PYTHON_RUNTIME_EXE_DIR "${PYTHON_RUNTIME_EXE}" DIRECTORY)
+
+    add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${PYTHON_RUNTIME_EXE_DIR}"
+            "$<TARGET_FILE_DIR:${PROJECT_NAME}>"
+        COMMENT "Copying Python runtime directory to executable directory"
+    )
+    message(STATUS "Post-build: Python runtime directory will be copied: ${PYTHON_RUNTIME_EXE_DIR}")
+
+    set(PYTHON_HELPER_EXES
+        "${PYTHON_RUNTIME_EXE_DIR}/pythonw.exe"
+        "${PYTHON_RUNTIME_EXE_DIR}/venvlauncher.exe"
+        "${PYTHON_RUNTIME_EXE_DIR}/venvwlauncher.exe"
+        "${VCPKG_PYTHON_DIR}/pythonw.exe" "${VCPKG_PYTHON_DIR}/venvlauncher.exe" "${VCPKG_PYTHON_DIR}/venvwlauncher.exe"
+        "${VCPKG_PYTHON_DIR}/../bin/pythonw.exe" "${VCPKG_PYTHON_DIR}/../bin/venvlauncher.exe" "${VCPKG_PYTHON_DIR}/../bin/venvwlauncher.exe"
+        "${VCPKG_PYTHON_DIR}/../../bin/pythonw.exe" "${VCPKG_PYTHON_DIR}/../../bin/venvlauncher.exe" "${VCPKG_PYTHON_DIR}/../../bin/venvwlauncher.exe"
+        "${CMAKE_BINARY_DIR}/vcpkg_installed/${VCPKG_TARGET_TRIPLET}/tools/python3/pythonw.exe"
+        "${CMAKE_BINARY_DIR}/vcpkg_installed/${VCPKG_TARGET_TRIPLET}/tools/python3/venvlauncher.exe"
+        "${CMAKE_BINARY_DIR}/vcpkg_installed/${VCPKG_TARGET_TRIPLET}/tools/python3/venvwlauncher.exe"
+    )
+    foreach(PYTHON_HELPER_EXE IN LISTS PYTHON_HELPER_EXES)
+        if(EXISTS "${PYTHON_HELPER_EXE}")
+            add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${PYTHON_HELPER_EXE}"
+                    "$<TARGET_FILE_DIR:${PROJECT_NAME}>"
+                COMMENT "Copying Python helper executable to executable directory"
+            )
+        endif()
+    endforeach()
 
     # Glob python*.dll - check both tools/python3/ and parent bin/ (vcpkg layout varies)
     file(GLOB PYTHON_RUNTIME_DLLS
         "${VCPKG_PYTHON_DIR}/python*.dll"
         "${VCPKG_PYTHON_DIR}/../bin/python*.dll"
+        "${VCPKG_PYTHON_DIR}/../../bin/python*.dll"
+        "${CMAKE_BINARY_DIR}/vcpkg_installed/${VCPKG_TARGET_TRIPLET}/bin/python*.dll"
+        "${CMAKE_BINARY_DIR}/vcpkg_installed/${VCPKG_TARGET_TRIPLET}/tools/python3/python*.dll"
     )
     if(PYTHON_RUNTIME_DLLS)
         add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
@@ -513,6 +600,16 @@ if(WIN32)
             COMMENT "Copying Python DLLs to executable directory"
         )
         message(STATUS "Post-build: Python DLLs will be copied: ${PYTHON_RUNTIME_DLLS}")
+    endif()
+
+    if(PYTHON_RUNTIME_DLLS_DIR)
+        add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${PYTHON_RUNTIME_DLLS_DIR}"
+                "$<TARGET_FILE_DIR:${PROJECT_NAME}>/DLLs"
+            COMMENT "Copying Python extension DLLs to executable directory"
+        )
+        message(STATUS "Post-build: Python extension DLLs will be copied: ${PYTHON_RUNTIME_DLLS_DIR}")
     endif()
 endif()
 

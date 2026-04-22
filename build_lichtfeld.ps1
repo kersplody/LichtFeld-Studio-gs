@@ -630,6 +630,27 @@ function Copy-RequiredDLLs {
     } else {
         Write-Host "No DLLs needed copying (CMake POST_BUILD handles this)" -ForegroundColor Green
     }
+
+    $VcpkgInstalledDir = Join-Path $BuildDir "vcpkg_installed"
+    $PythonRuntimeDir = $null
+    if (Test-Path $VcpkgInstalledDir) {
+        $PythonRuntimeDir = Get-ChildItem -Path $VcpkgInstalledDir -Directory -ErrorAction SilentlyContinue |
+            ForEach-Object { Join-Path $_.FullName "tools\python3" } |
+            Where-Object { Test-Path (Join-Path $_ "python.exe") } |
+            Select-Object -First 1
+    }
+
+    if ($PythonRuntimeDir) {
+        Write-Host "Copying embedded Python runtime..." -ForegroundColor Yellow
+        try {
+            Copy-Item (Join-Path $PythonRuntimeDir "*") $OutputDir -Recurse -Force -ErrorAction Stop
+            Write-Host "  Copied: $PythonRuntimeDir\*" -ForegroundColor Gray
+        } catch {
+            Write-Host "  WARNING: Failed to copy embedded Python runtime: $_" -ForegroundColor Yellow
+        }
+    } else {
+        Write-Host "Python runtime not found under vcpkg_installed; CMake may have handled it." -ForegroundColor Gray
+    }
 }
 
 # ============================================================================

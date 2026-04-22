@@ -575,8 +575,31 @@ if(BUILD_PORTABLE)
     if(WIN32)
         # Windows: Python layout is tools/python3/{python.exe, Lib/, DLLs/, python312.dll}
         # Install to root Lib/ and DLLs/ to match getPythonHome() expectations
-        set(VCPKG_PYTHON_STDLIB "${VCPKG_PYTHON_TOOLS_DIR}/Lib")
-        set(VCPKG_PYTHON_DLLS "${VCPKG_PYTHON_TOOLS_DIR}/DLLs")
+        set(PYTHON_STDLIB_CANDIDATES
+            "${CMAKE_BINARY_DIR}/vcpkg_installed/${VCPKG_TARGET_TRIPLET}/tools/python3/Lib"
+            "${VCPKG_PYTHON_TOOLS_DIR}/../tools/python3/Lib"
+            "${VCPKG_PYTHON_TOOLS_DIR}/../../tools/python3/Lib"
+            "${VCPKG_PYTHON_TOOLS_DIR}/Lib"
+            "${Python_STDLIB}")
+        set(PYTHON_DLLS_DIR_CANDIDATES
+            "${CMAKE_BINARY_DIR}/vcpkg_installed/${VCPKG_TARGET_TRIPLET}/tools/python3/DLLs"
+            "${VCPKG_PYTHON_TOOLS_DIR}/../tools/python3/DLLs"
+            "${VCPKG_PYTHON_TOOLS_DIR}/../../tools/python3/DLLs"
+            "${VCPKG_PYTHON_TOOLS_DIR}/DLLs")
+        set(VCPKG_PYTHON_STDLIB "")
+        foreach(_stdlib IN LISTS PYTHON_STDLIB_CANDIDATES)
+            if(EXISTS "${_stdlib}/encodings/__init__.py")
+                set(VCPKG_PYTHON_STDLIB "${_stdlib}")
+                break()
+            endif()
+        endforeach()
+        set(VCPKG_PYTHON_DLLS "")
+        foreach(_dlls IN LISTS PYTHON_DLLS_DIR_CANDIDATES)
+            if(EXISTS "${_dlls}")
+                set(VCPKG_PYTHON_DLLS "${_dlls}")
+                break()
+            endif()
+        endforeach()
         set(PYTHON_INSTALL_STDLIB "Lib")
 
         # Install Python executable to bin/
@@ -594,6 +617,9 @@ if(BUILD_PORTABLE)
             "${VCPKG_PYTHON_TOOLS_DIR}/../bin/pythonw.exe"
             "${VCPKG_PYTHON_TOOLS_DIR}/../bin/venvlauncher.exe"
             "${VCPKG_PYTHON_TOOLS_DIR}/../bin/venvwlauncher.exe"
+            "${VCPKG_PYTHON_TOOLS_DIR}/../../bin/pythonw.exe"
+            "${VCPKG_PYTHON_TOOLS_DIR}/../../bin/venvlauncher.exe"
+            "${VCPKG_PYTHON_TOOLS_DIR}/../../bin/venvwlauncher.exe"
         )
         set(PYTHON_HELPER_INSTALL_LIST "")
         foreach(_helper IN LISTS PYTHON_HELPER_EXES)
@@ -623,7 +649,9 @@ if(BUILD_PORTABLE)
         endif()
 
         # Also check parent dir for python DLLs (vcpkg sometimes puts them there)
-        file(GLOB PYTHON_DLLS_PARENT "${VCPKG_PYTHON_TOOLS_DIR}/../bin/python*.dll")
+        file(GLOB PYTHON_DLLS_PARENT
+            "${VCPKG_PYTHON_TOOLS_DIR}/../bin/python*.dll"
+            "${VCPKG_PYTHON_TOOLS_DIR}/../../bin/python*.dll")
         if(PYTHON_DLLS_PARENT)
             install(FILES ${PYTHON_DLLS_PARENT}
                 DESTINATION "${CMAKE_INSTALL_BINDIR}"
@@ -649,7 +677,7 @@ if(BUILD_PORTABLE)
             )
             message(STATUS "  Will bundle Python stdlib from: ${VCPKG_PYTHON_STDLIB}")
         else()
-            message(WARNING "Python stdlib not found at ${VCPKG_PYTHON_STDLIB}")
+            message(FATAL_ERROR "Python stdlib not found. Checked: ${PYTHON_STDLIB_CANDIDATES}")
         endif()
 
         # Install DLLs directory (compiled extensions like _socket.pyd, etc.)

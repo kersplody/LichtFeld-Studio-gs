@@ -504,15 +504,75 @@ _add_dll_dirs()
 
                 const auto python_home = lfs::core::getPythonHome();
                 if (!python_home.empty()) {
-                    const auto home_wstr = python_home.wstring();
-                    PyStatus st = PyConfig_SetString(&config, &config.home, home_wstr.c_str());
-                    if (PyStatus_Exception(st)) {
-                        LOG_ERROR("Failed to set Python home: {}", st.err_msg ? st.err_msg : "unknown");
+                    auto set_config_path = [&](const char* label, wchar_t** field, const std::filesystem::path& path) {
+                        const auto path_wstr = path.wstring();
+                        PyStatus st = PyConfig_SetString(&config, field, path_wstr.c_str());
+                        if (PyStatus_Exception(st)) {
+                            LOG_ERROR("Failed to set Python {}: {}", label, st.err_msg ? st.err_msg : "unknown");
+                            return false;
+                        }
+                        return true;
+                    };
+
+                    if (!set_config_path("home", &config.home, python_home)) {
                         PyConfig_Clear(&config);
                         return;
                     }
+
+#ifdef _WIN32
+                    // Keep embedded Windows Python isolated from system installs
+                    // and the registry. Without explicit paths, CPython can infer
+                    // the repository root from the app executable and then miss the
+                    // adjacent build/Release/Lib stdlib.
+                    config.use_environment = 0;
+
+                    const auto embedded_python = lfs::core::getEmbeddedPython();
+                    const auto program_path = embedded_python.empty()
+                                                  ? lfs::core::getExecutablePath()
+                                                  : embedded_python;
+                    if (!set_config_path("program_name", &config.program_name, program_path) ||
+                        !set_config_path("executable", &config.executable, program_path) ||
+                        !set_config_path("base_executable", &config.base_executable, program_path)) {
+                        PyConfig_Clear(&config);
+                        return;
+                    }
+
+                    auto append_search_path = [&](const std::filesystem::path& path) {
+                        const auto path_wstr = path.wstring();
+                        st = PyWideStringList_Append(&config.module_search_paths, path_wstr.c_str());
+                        if (PyStatus_Exception(st)) {
+                            LOG_ERROR("Failed to add Python search path '{}': {}",
+                                      lfs::core::path_to_utf8(path),
+                                      st.err_msg ? st.err_msg : "unknown");
+                            return false;
+                        }
+                        return true;
+                    };
+
+                    PyStatus st = PyStatus_Ok();
+                    const auto exe_dir = lfs::core::getExecutableDir();
+                    const auto version_zip = std::string("python") +
+                                             std::to_string(PY_MAJOR_VERSION) +
+                                             std::to_string(PY_MINOR_VERSION) + ".zip";
+                    config.module_search_paths_set = 1;
+                    if (!append_search_path(python_home / version_zip) ||
+                        !append_search_path(python_home / "Lib") ||
+                        !append_search_path(python_home / "DLLs") ||
+                        !append_search_path(python_home) ||
+                        !append_search_path(exe_dir)) {
+                        PyConfig_Clear(&config);
+                        return;
+                    }
+#endif
+
                     LOG_INFO("Set Python home: {}", lfs::core::path_to_utf8(python_home));
                 }
+
+#ifdef _WIN32
+                if (python_home.empty()) {
+                    LOG_WARN("Python home not found; embedded Python may fall back to system paths");
+                }
+#endif
 
                 PyStatus status = Py_InitializeFromConfig(&config);
                 PyConfig_Clear(&config);
