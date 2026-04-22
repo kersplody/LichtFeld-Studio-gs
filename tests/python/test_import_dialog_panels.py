@@ -249,6 +249,38 @@ def test_dataset_import_panel_loads_updated_dataset_path(import_dialog_module, t
     ]
 
 
+def test_dataset_import_panel_defaults_nerfstudio_sparse_output_to_project_root(import_dialog_module, tmp_path):
+    module, state = import_dialog_module
+    panel = module.DatasetImportPanel()
+    panel._handle = _HandleStub()
+
+    project_root = tmp_path / "nerfstudio_project"
+    sparse_dir = project_root / "colmap" / "sparse" / "0"
+    sparse_dir.mkdir(parents=True)
+    state.dataset_infos[str(sparse_dir)] = SimpleNamespace(
+        base_path=sparse_dir,
+        images_path=project_root / "images",
+        sparse_path=sparse_dir,
+        masks_path=project_root / "mask",
+        has_masks=False,
+        image_count=48,
+        mask_count=0,
+    )
+
+    assert panel.show(str(sparse_dir)) is True
+
+    panel._on_do_load()
+
+    assert state.load_file_calls == [
+        {
+            "path": str(sparse_dir),
+            "is_dataset": True,
+            "output_path": str(project_root / "output"),
+            "init_path": "",
+        }
+    ]
+
+
 def test_dataset_import_panel_clears_init_and_sidecar_on_dataset_change(import_dialog_module, tmp_path):
     module, state = import_dialog_module
     panel = module.DatasetImportPanel()

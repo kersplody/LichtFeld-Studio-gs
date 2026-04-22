@@ -330,6 +330,50 @@ TEST_F(ColmapImageLayoutTest, LoadCanBeCancelledDuringMetadataParse) {
     EXPECT_EQ(result.error().code, lfs::io::ErrorCode::CANCELLED);
 }
 
+TEST_F(ColmapImageLayoutTest, DetectDatasetInfoFallsBackToNerfstudioImageRootWhenDefaultImagesEmpty) {
+    const fs::path scene_dir = temp_dir_ / "nerfstudio_scene";
+    const fs::path sparse_dir = scene_dir / "colmap" / "sparse" / "0";
+
+    write_minimal_colmap_text_dataset(sparse_dir, "frame_0001.png");
+    write_png(scene_dir / "images" / "frame_0001.png");
+
+    auto info = lfs::io::detect_dataset_info(sparse_dir);
+
+    EXPECT_TRUE(fs::equivalent(info.images_path, scene_dir / "images"));
+    EXPECT_EQ(info.image_count, 1);
+}
+
+TEST_F(ColmapImageLayoutTest, LoaderFallsBackToNerfstudioImageRootWhenDefaultImagesEmpty) {
+    const fs::path scene_dir = temp_dir_ / "nerfstudio_scene";
+    const fs::path sparse_dir = scene_dir / "colmap" / "sparse" / "0";
+
+    write_minimal_colmap_text_dataset(sparse_dir, "frame_0001.png");
+    fs::create_directories(sparse_dir / "images");
+    write_png(scene_dir / "images" / "frame_0001.png");
+
+    lfs::io::ColmapLoader loader;
+    auto result = loader.load(sparse_dir, {.validate_only = true});
+
+    ASSERT_TRUE(result.has_value()) << result.error().format();
+}
+
+TEST_F(ColmapImageLayoutTest, LoaderFindsNerfstudioColmapSparseModelUnderSceneRoot) {
+    const fs::path scene_dir = temp_dir_ / "nerfstudio_scene";
+    const fs::path sparse_dir = scene_dir / "colmap" / "sparse" / "custom_model";
+
+    write_minimal_colmap_text_dataset(sparse_dir, "frame_0001.png");
+    write_png(scene_dir / "images" / "frame_0001.png");
+
+    const auto info = lfs::io::detect_dataset_info(scene_dir);
+    EXPECT_TRUE(fs::equivalent(info.images_path, scene_dir / "images"));
+    EXPECT_TRUE(fs::equivalent(info.sparse_path, sparse_dir));
+
+    lfs::io::ColmapLoader loader;
+    auto result = loader.load(scene_dir, {.validate_only = true});
+
+    ASSERT_TRUE(result.has_value()) << result.error().format();
+}
+
 TEST_F(ColmapImageLayoutTest, LoadCancelsInsteadOfFallingBackFromCustomPointCloudPly) {
     const fs::path dataset_dir = temp_dir_ / "dataset";
 

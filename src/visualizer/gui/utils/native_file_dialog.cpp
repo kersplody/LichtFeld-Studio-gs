@@ -11,11 +11,17 @@
 #include <nfd.h>
 
 #include <cstdint>
+#include <cstdio>
+#include <cstring>
 #include <string>
 #include <string_view>
 #include <system_error>
 #include <utility>
 #include <vector>
+
+#if defined(__linux__)
+#include <sys/wait.h>
+#endif
 
 namespace lfs::vis::gui {
 
@@ -167,6 +173,107 @@ namespace lfs::vis::gui {
             return {};
         }
 
+        [[nodiscard]] bool isMissingLinuxPortalError(const char* error) {
+#if defined(__linux__)
+            return error &&
+                   std::strstr(error, "org.freedesktop.portal.Desktop") != nullptr &&
+                   std::strstr(error, "was not provided by any .service files") != nullptr;
+#else
+            (void)error;
+            return false;
+#endif
+        }
+
+#if defined(__linux__)
+        [[nodiscard]] std::string shellQuote(const std::string_view value) {
+            std::string quoted = "'";
+            for (const char ch : value) {
+                if (ch == '\'') {
+                    quoted += "'\\''";
+                } else {
+                    quoted += ch;
+                }
+            }
+            quoted += "'";
+            return quoted;
+        }
+
+        [[nodiscard]] std::string makeZenityFilenameArg(const DialogRequest& request,
+                                                        const std::filesystem::path& defaultDirectory) {
+            std::filesystem::path filename = defaultDirectory;
+            if (request.kind == DialogKind::SaveFile && !request.default_name.empty()) {
+                filename /= ensureDefaultExtension(request.default_name, request.required_extension);
+            }
+            if (filename.empty()) {
+                return {};
+            }
+            return " --filename=" + shellQuote(lfs::core::path_to_utf8(filename));
+        }
+
+        [[nodiscard]] std::string makeZenityFilterArgs(const std::vector<DialogFilter>& filters) {
+            std::string args;
+            for (const DialogFilter& filter : filters) {
+                std::string filterArg = filter.name + " |";
+                bool hasExtension = false;
+                for (const std::string& extension : filter.extensions) {
+                    const std::string normalized = normalizeExtension(extension);
+                    if (normalized.empty()) {
+                        continue;
+                    }
+                    filterArg += " *." + normalized;
+                    hasExtension = true;
+                }
+                if (hasExtension) {
+                    args += " --file-filter=" + shellQuote(filterArg);
+                }
+            }
+            return args;
+        }
+
+        bool runZenityDialog(const DialogRequest& request, std::filesystem::path& resultPath) {
+            resultPath.clear();
+
+            const std::filesystem::path defaultDirectory =
+                normalizeDefaultDirectory(request.default_path);
+            std::string command = "zenity --file-selection";
+            if (request.kind == DialogKind::SaveFile) {
+                command += " --save --confirm-overwrite";
+            } else if (request.kind == DialogKind::PickFolder) {
+                command += " --directory";
+            }
+            command += makeZenityFilenameArg(request, defaultDirectory);
+            command += makeZenityFilterArgs(request.filters);
+            command += " 2>/dev/null";
+
+            FILE* pipe = popen(command.c_str(), "r");
+            if (!pipe) {
+                LOG_WARN("Native file dialog fallback failed: could not launch zenity");
+                return false;
+            }
+
+            std::string output;
+            char buffer[4096];
+            while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
+                output += buffer;
+            }
+            const int status = pclose(pipe);
+            if (status == -1 || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+                return false;
+            }
+
+            while (!output.empty() && (output.back() == '\n' || output.back() == '\r')) {
+                output.pop_back();
+            }
+            if (output.empty()) {
+                return false;
+            }
+
+            resultPath = appendRequiredExtension(lfs::core::utf8_to_path(output),
+                                                 request.required_extension);
+            return !resultPath.empty();
+        }
+#endif
+
         class FilterListStorage {
         public:
             explicit FilterListStorage(const std::vector<DialogFilter>& filters) {
@@ -312,8 +419,17 @@ namespace lfs::vis::gui {
 
             if (dialogResult != NFD_OKAY) {
                 const char* error = NFD_GetError();
-                LOG_ERROR("Native file dialog failed: {}",
-                          error ? error : "unknown error");
+                if (isMissingLinuxPortalError(error)) {
+#if defined(__linux__)
+                    LOG_WARN("Native file dialog portal unavailable; falling back to zenity.");
+                    return runZenityDialog(request, resultPath);
+#else
+                    LOG_WARN("Native file dialog unavailable: xdg-desktop-portal is not running or not installed.");
+#endif
+                } else {
+                    LOG_ERROR("Native file dialog failed: {}",
+                              error ? error : "unknown error");
+                }
                 return false;
             }
 

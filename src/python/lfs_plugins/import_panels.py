@@ -186,8 +186,19 @@ class DatasetImportPanel(_ImportDialogPanel):
 
     def _default_output_path(self, dataset_path: str, info) -> str:
         preview_root = self._preview_base_path(dataset_path)
+        nerfstudio_root = self._nerfstudio_project_root(preview_root)
+        if nerfstudio_root is not None:
+            return str(nerfstudio_root / "output")
         base_path = Path(info.base_path) if info is not None else preview_root
         return str(base_path / "output")
+
+    def _nerfstudio_project_root(self, path: Path):
+        parts = path.parts
+        if len(parts) < 3:
+            return None
+        if parts[-2] == "sparse" and parts[-3] == "colmap":
+            return path.parent.parent.parent
+        return None
 
     def _apply_dataset_path(self, dataset_path: str, reset_output: bool) -> bool:
         next_value = str(dataset_path).strip()

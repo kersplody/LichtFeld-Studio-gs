@@ -558,8 +558,12 @@ _add_dll_dirs()
                     LOG_INFO("Added Python module dir to path: {}", python_module_dir_utf8);
                 } else {
                     const auto exe_dir_utf8 = lfs::core::path_to_utf8(lfs::core::getExecutableDir());
-                    LOG_WARN("Python module 'lichtfeld' not found. Expected a lichtfeld*.so/.pyd in: {}/src/python, {}",
-                             exe_dir_utf8, exe_dir_utf8);
+                    const auto parent_dir_utf8 = lfs::core::path_to_utf8(lfs::core::getExecutableDir().parent_path());
+                    LOG_WARN("Python module 'lichtfeld' not found. Expected a lichtfeld*.so/.pyd in: {}/../lib/python, {}/src/python, {}/src/python, {}",
+                             exe_dir_utf8,
+                             exe_dir_utf8,
+                             parent_dir_utf8,
+                             exe_dir_utf8);
                 }
             }
 

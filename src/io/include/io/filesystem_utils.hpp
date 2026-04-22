@@ -66,6 +66,8 @@ namespace lfs::io {
         ".mask.png",
     };
 
+    inline constexpr const char* NERFSTUDIO_IMAGES_DIR_FALLBACK = "../../../images";
+
     // Safe filesystem operations that don't throw
     inline bool safe_exists(const fs::path& path) {
         std::error_code ec;
@@ -212,12 +214,43 @@ namespace lfs::io {
     };
 
     // Get standard COLMAP search paths for a base directory
+    inline void append_colmap_sparse_model_dirs(std::vector<fs::path>& paths,
+                                                const fs::path& sparse_root) {
+        if (!safe_is_directory(sparse_root)) {
+            return;
+        }
+
+        std::vector<fs::path> model_dirs;
+        std::error_code ec;
+        for (fs::directory_iterator it(sparse_root, ec), end; !ec && it != end; it.increment(ec)) {
+            std::error_code file_ec;
+            if (!it->is_directory(file_ec) || file_ec) {
+                continue;
+            }
+            model_dirs.push_back(it->path());
+        }
+
+        std::sort(model_dirs.begin(), model_dirs.end());
+        for (const auto& model_dir : model_dirs) {
+            if (std::find(paths.begin(), paths.end(), model_dir) == paths.end()) {
+                paths.push_back(model_dir);
+            }
+        }
+    }
+
     inline std::vector<fs::path> get_colmap_search_paths(const fs::path& base) {
-        return {
-            base / "sparse" / "0", // Standard COLMAP
-            base / "sparse",       // Alternative COLMAP
-            base                   // Reality Capture / flat structure
-        };
+        std::vector<fs::path> paths;
+        paths.reserve(8);
+
+        paths.push_back(base / "sparse" / "0");          // Standard COLMAP
+        append_colmap_sparse_model_dirs(paths, base / "sparse");
+        paths.push_back(base / "sparse");                // Alternative COLMAP
+        paths.push_back(base / "colmap" / "sparse" / "0"); // Nerfstudio
+        append_colmap_sparse_model_dirs(paths, base / "colmap" / "sparse");
+        paths.push_back(base / "colmap" / "sparse");     // Alternative Nerfstudio
+        paths.push_back(base);                            // Reality Capture / flat structure
+
+        return paths;
     }
 
     // Check if a file has an image extension
@@ -414,6 +447,18 @@ namespace lfs::io {
             const bool recursive_image_scan =
                 !paths_equivalent_or_lexically_equal(info.images_path, base_path);
             info.image_count = count_image_files(info.images_path, recursive_image_scan);
+        }
+
+        if (info.image_count == 0) {
+            const fs::path nerfstudio_images_path =
+                (base_path / NERFSTUDIO_IMAGES_DIR_FALLBACK).lexically_normal();
+            if (!paths_equivalent_or_lexically_equal(nerfstudio_images_path, info.images_path)) {
+                const int nerfstudio_image_count = count_image_files(nerfstudio_images_path, true);
+                if (nerfstudio_image_count > 0) {
+                    info.images_path = nerfstudio_images_path;
+                    info.image_count = nerfstudio_image_count;
+                }
+            }
         }
 
         for (const auto& sp : get_colmap_search_paths(base_path)) {

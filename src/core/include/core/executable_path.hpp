@@ -148,6 +148,12 @@ namespace lfs::core {
             return dev;
         }
 
+        // Development with configuration-specific executable dirs
+        // (e.g. build/Release/LichtFeld-Studio with module in build/src/python).
+        if (const auto dev_parent = exe_dir.parent_path() / "src" / "python"; module_exists(dev_parent)) {
+            return dev_parent;
+        }
+
         // Fallback: module in same directory as exe (Windows dev builds)
         if (module_exists(exe_dir)) {
             return exe_dir;

@@ -122,17 +122,74 @@ namespace lfs::io {
             return candidate.lexically_normal() == path.lexically_normal();
         };
 
-        // If specified folder doesn't exist, check for flat structure
+        auto try_nerfstudio_image_root_fallback = [&]() {
+            if (actual_images_folder != "images") {
+                return false;
+            }
+
+            const auto fallback_path = (path / NERFSTUDIO_IMAGES_DIR_FALLBACK).lexically_normal();
+            if (count_image_files(fallback_path, true) == 0) {
+                return false;
+            }
+
+            actual_images_folder = lfs::core::path_to_utf8(fallback_path);
+            image_dir = fallback_path;
+            LOG_INFO("Detected Nerfstudio COLMAP layout - using '{}' as image root",
+                     actual_images_folder);
+            return true;
+        };
+
+        // If specified folder doesn't exist, check for Nerfstudio and flat layouts.
         if (!std::filesystem::exists(image_dir)) {
-            const auto cameras_txt_parent =
-                cameras_txt.empty() ? std::filesystem::path{} : cameras_txt.parent_path();
-            const auto cameras_bin_parent =
-                cameras_bin.empty() ? std::filesystem::path{} : cameras_bin.parent_path();
+            if (!try_nerfstudio_image_root_fallback()) {
+                const auto cameras_txt_parent =
+                    cameras_txt.empty() ? std::filesystem::path{} : cameras_txt.parent_path();
+                const auto cameras_bin_parent =
+                    cameras_bin.empty() ? std::filesystem::path{} : cameras_bin.parent_path();
 
-            bool is_flat_structure = is_dataset_root(cameras_txt_parent) ||
-                                     is_dataset_root(cameras_bin_parent);
+                bool is_flat_structure = is_dataset_root(cameras_txt_parent) ||
+                                         is_dataset_root(cameras_bin_parent);
 
-            if (is_flat_structure) {
+                if (is_flat_structure) {
+                    bool has_images_in_root = false;
+                    for (const auto& entry : std::filesystem::directory_iterator(path)) {
+                        if (entry.is_regular_file() && is_image_file(entry.path())) {
+                            has_images_in_root = true;
+                            break;
+                        }
+                    }
+
+                    if (has_images_in_root) {
+                        actual_images_folder = ".";
+                        image_dir = path;
+                        LOG_INFO("Detected flat structure - using root directory for images");
+                    } else {
+                        return make_error(ErrorCode::MISSING_REQUIRED_FILES,
+                                          std::format("Images directory '{}' not found and no images in root",
+                                                      options.images_folder),
+                                          path);
+                    }
+                } else {
+                    return make_error(ErrorCode::MISSING_REQUIRED_FILES,
+                                      std::format("Images directory '{}' not found", options.images_folder), path);
+                }
+            }
+        } else if (count_image_files(image_dir, true) == 0) {
+            if (!try_nerfstudio_image_root_fallback()) {
+                const auto cameras_txt_parent =
+                    cameras_txt.empty() ? std::filesystem::path{} : cameras_txt.parent_path();
+                const auto cameras_bin_parent =
+                    cameras_bin.empty() ? std::filesystem::path{} : cameras_bin.parent_path();
+
+                bool is_flat_structure = is_dataset_root(cameras_txt_parent) ||
+                                         is_dataset_root(cameras_bin_parent);
+
+                if (!is_flat_structure) {
+                    return make_error(ErrorCode::MISSING_REQUIRED_FILES,
+                                      std::format("Images directory '{}' contains no images", options.images_folder),
+                                      image_dir);
+                }
+
                 bool has_images_in_root = false;
                 for (const auto& entry : std::filesystem::directory_iterator(path)) {
                     if (entry.is_regular_file() && is_image_file(entry.path())) {
@@ -147,13 +204,10 @@ namespace lfs::io {
                     LOG_INFO("Detected flat structure - using root directory for images");
                 } else {
                     return make_error(ErrorCode::MISSING_REQUIRED_FILES,
-                                      std::format("Images directory '{}' not found and no images in root",
+                                      std::format("Images directory '{}' contains no images and no images in root",
                                                   options.images_folder),
                                       path);
                 }
-            } else {
-                return make_error(ErrorCode::MISSING_REQUIRED_FILES,
-                                  std::format("Images directory '{}' not found", options.images_folder), path);
             }
         }
 

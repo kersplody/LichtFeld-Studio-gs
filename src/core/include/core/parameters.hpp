@@ -11,6 +11,7 @@
 #include <cctype>
 #include <expected>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -41,6 +42,23 @@ namespace lfs::core {
         inline constexpr std::string_view kStrategyLFSLegacy = "lfs";
         inline constexpr std::string_view kStrategyIGSPlus = "igs+";
 
+        [[nodiscard]] inline std::optional<std::filesystem::path> nerfstudio_project_root_from_sparse_path(
+            const std::filesystem::path& dataset_path) {
+            const auto normalized = dataset_path.lexically_normal();
+            const auto sparse_path = normalized.parent_path();
+            const auto colmap_path = sparse_path.parent_path();
+            const auto project_root = colmap_path.parent_path();
+
+            if (normalized.filename().empty() ||
+                sparse_path.filename() != "sparse" ||
+                colmap_path.filename() != "colmap" ||
+                project_root.empty()) {
+                return std::nullopt;
+            }
+
+            return project_root;
+        }
+
         [[nodiscard]] inline std::filesystem::path default_dataset_output_path(
             const std::filesystem::path& dataset_path) {
             auto base_path = dataset_path;
@@ -50,6 +68,8 @@ namespace lfs::core {
             });
             if (ext == ".json") {
                 base_path = dataset_path.parent_path();
+            } else if (const auto nerfstudio_root = nerfstudio_project_root_from_sparse_path(dataset_path)) {
+                base_path = *nerfstudio_root;
             }
             return base_path / "output";
         }

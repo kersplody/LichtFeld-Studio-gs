@@ -3,6 +3,8 @@
 
 #include <gtest/gtest.h>
 
+#include <filesystem>
+
 #include "core/parameter_manager.hpp"
 #include "core/parameters.hpp"
 
@@ -17,6 +19,15 @@ namespace {
         EXPECT_EQ(manager.getActiveParams().strategy, "mrnf");
         EXPECT_EQ(lfs::core::param::OptimizationParameters{}.strategy, "mrnf");
         EXPECT_EQ(lfs::core::param::OptimizationParameters::mcmc_defaults().strategy, "mcmc");
+    }
+
+    TEST(ParameterManagerTest, DefaultDatasetOutputPathUsesNerfstudioProjectRootForSparseModelPath) {
+        const std::filesystem::path sparse_model_path =
+            "/workspace/projects/default/example/colmap/sparse/0";
+
+        EXPECT_EQ(
+            lfs::core::param::default_dataset_output_path(sparse_model_path),
+            std::filesystem::path("/workspace/projects/default/example/output"));
     }
 
     TEST(ParameterManagerTest, ImportTrainingParamsRestoresResolvedCheckpointState) {
