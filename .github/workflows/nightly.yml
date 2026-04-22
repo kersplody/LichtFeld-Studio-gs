@@ -303,6 +303,24 @@ jobs:
             }
           }
 
+      # Failure-only; small log payload with short retention stays well under the
+      # GitHub Actions artifact quota.
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-nightly-diagnostics-${{ github.run_number }}
+          if-no-files-found: ignore
+          retention-days: 7
+          path: |
+            build/CMakeCache.txt
+            build/CMakeFiles/CMakeConfigureLog.yaml
+            build/CMakeFiles/CMakeError.log
+            build/CMakeFiles/CMakeOutput.log
+            build/vcpkg-manifest-install.log
+            build/vcpkg_installed/vcpkg/issue_body.md
+            build/vcpkg_installed/vcpkg/blds/**/*.log
+
       - name: Package
         id: package
         shell: pwsh
@@ -357,16 +375,11 @@ jobs:
 
       # Package binaries must not be uploaded as GitHub Actions artifacts.
       # Keep the generated zip on the runner and publish it directly to R2.
-      - name: Ensure AWS CLI is available
+      # AWS CLI is preinstalled on windows-2022 hosted runners.
+      - name: Verify AWS CLI
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          if (-not (Get-Command aws -ErrorAction SilentlyContinue)) {
-            choco install awscli -y --no-progress
-            $machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
-            $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-            $env:Path = "$env:ProgramFiles\Amazon\AWSCLIV2;$machinePath;$userPath"
-          }
           aws --version
 
       - name: Upload package to Cloudflare R2
@@ -405,6 +418,41 @@ jobs:
 
           "SHA256_CHECKSUM=$checksum" >> $env:GITHUB_ENV
           "SHA256_OBJECT_KEY=$checksumKey" >> $env:GITHUB_ENV
+
+      # Confirms the zip landed intact before we advertise the URL. Size mismatch
+      # is the most likely failure mode on flaky networks; a missing sidecar .sha256
+      # would silently break download verification.
+      - name: Verify R2 upload
+        shell: pwsh
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          BUILD_CHANNEL: ${{ steps.package.outputs.build_channel }}
+          FILE_NAME: ${{ steps.package.outputs.package_name }}
+          R2_ACCOUNT_ID: ${{ vars.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ vars.R2_BUCKET }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $endpointUrl = "https://$($env:R2_ACCOUNT_ID).r2.cloudflarestorage.com"
+          $versionedKey = "windows/$($env:BUILD_CHANNEL)/$($env:FILE_NAME)"
+          $checksumKey = "$versionedKey.sha256"
+          $localSize = (Get-Item $env:FILE_NAME).Length
+
+          $headJson = aws s3api head-object `
+            --bucket $env:R2_BUCKET `
+            --key $versionedKey `
+            --endpoint-url $endpointUrl | ConvertFrom-Json
+          if ($headJson.ContentLength -ne $localSize) {
+            throw "R2 object size mismatch for $versionedKey (local=$localSize, remote=$($headJson.ContentLength))"
+          }
+
+          aws s3api head-object `
+            --bucket $env:R2_BUCKET `
+            --key $checksumKey `
+            --endpoint-url $endpointUrl | Out-Null
+
+          Write-Host "Verified $versionedKey ($localSize bytes) and $checksumKey on R2."
 
       - name: Publish summary
         shell: pwsh
