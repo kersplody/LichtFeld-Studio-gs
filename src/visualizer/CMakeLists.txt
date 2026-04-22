@@ -284,13 +284,6 @@ endif()
 # Set C++ standard
 target_compile_features(lfs_visualizer PUBLIC cxx_std_23)
 
-# _CONFIG variants are no-op for single-config generators (Linux/Ninja); MSVC uses them
-set_target_properties(lfs_visualizer PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY_DEBUG        ${CMAKE_BINARY_DIR}/Debug
-    RUNTIME_OUTPUT_DIRECTORY_RELEASE      ${CMAKE_BINARY_DIR}/Release
-    RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO ${CMAKE_BINARY_DIR}/RelWithDebInfo
-    RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL   ${CMAKE_BINARY_DIR}/MinSizeRel
-)
 if(WIN32)
     set_target_properties(lfs_visualizer PROPERTIES
         POSITION_INDEPENDENT_CODE ON
@@ -298,6 +291,10 @@ if(WIN32)
         VISIBILITY_INLINES_HIDDEN ON
         LIBRARY_OUTPUT_DIRECTORY              ${CMAKE_BINARY_DIR}/$<CONFIG>
         RUNTIME_OUTPUT_DIRECTORY              ${CMAKE_BINARY_DIR}/$<CONFIG>
+        RUNTIME_OUTPUT_DIRECTORY_DEBUG        ${CMAKE_BINARY_DIR}/Debug
+        RUNTIME_OUTPUT_DIRECTORY_RELEASE      ${CMAKE_BINARY_DIR}/Release
+        RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO ${CMAKE_BINARY_DIR}/RelWithDebInfo
+        RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL   ${CMAKE_BINARY_DIR}/MinSizeRel
     )
 endif()
 
