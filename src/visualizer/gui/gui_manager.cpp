@@ -54,9 +54,9 @@
 #include <OpenImageIO/imageio.h>
 #include <SDL3/SDL.h>
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cmath>
-#include <cctype>
 #include <cstdlib>
 #include <format>
 #include <fstream>

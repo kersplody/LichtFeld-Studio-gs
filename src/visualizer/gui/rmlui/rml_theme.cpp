@@ -13,13 +13,13 @@
 #include <RmlUi/Core/Factory.h>
 #include <algorithm>
 #include <cassert>
-#include <cstddef>
 #include <cctype>
 #include <cmath>
+#include <cstddef>
 #include <format>
 #include <fstream>
-#include <optional>
 #include <mutex>
+#include <optional>
 #include <string_view>
 #include <unordered_map>
 #include <vector>
@@ -427,8 +427,8 @@ namespace lfs::vis::gui::rml_theme {
 
             const int window_rounding = std::max(4, static_cast<int>(t.sizes.window_rounding));
             const int scrollbar_rounding = std::max(1, static_cast<int>(std::max(
-                                                        t.sizes.scrollbar_rounding,
-                                                        t.sizes.scrollbar_size * 0.5f)));
+                                                           t.sizes.scrollbar_rounding,
+                                                           t.sizes.scrollbar_size * 0.5f)));
 
             const ImVec4 startup_base_color = blend(p.surface, p.text, is_light ? 0.04f : 0.10f);
             const ImVec4 startup_border_color = blend(p.border, p.text, is_light ? 0.28f : 0.38f);

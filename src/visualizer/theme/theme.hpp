@@ -254,7 +254,7 @@ namespace lfs::vis {
     [[nodiscard]] LFS_VIS_API const Theme& catppuccinLatteTheme();
     [[nodiscard]] LFS_VIS_API const Theme& nordTheme();
     LFS_VIS_API bool setThemeByName(const std::string& name);
-    LFS_VIS_API bool checkThemeFileChanges();                 // Call periodically to hot-reload; returns true when any preset changed
+    LFS_VIS_API bool checkThemeFileChanges(); // Call periodically to hot-reload; returns true when any preset changed
 
     // Runtime vignette control (does not persist to theme file)
     LFS_VIS_API void setThemeVignetteEnabled(bool enabled);

@@ -1,9 +1,9 @@
 /* SPDX-FileCopyrightText: 2025 LichtFeld Studio Authors
  * SPDX-License-Identifier: GPL-3.0-or-later */
 
-#include "visualizer/theme/theme.hpp"
-#include "visualizer/internal/resource_paths.hpp"
 #include "core/path_utils.hpp"
+#include "visualizer/internal/resource_paths.hpp"
+#include "visualizer/theme/theme.hpp"
 
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>

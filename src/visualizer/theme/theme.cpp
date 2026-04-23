@@ -9,11 +9,11 @@
 #include <cctype>
 #include <filesystem>
 #include <fstream>
+#include <nlohmann/json.hpp>
 #include <optional>
 #include <set>
 #include <utility>
 #include <vector>
-#include <nlohmann/json.hpp>
 
 namespace lfs::vis {
 
