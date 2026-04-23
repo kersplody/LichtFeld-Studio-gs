@@ -435,7 +435,9 @@ namespace lfs::training {
         size_t evaluated_images = 0;
 
         const auto mask_mode = _params.optimization.mask_mode;
-        const bool use_masking = mask_mode == lfs::core::param::MaskMode::Segment || mask_mode == lfs::core::param::MaskMode::Ignore;
+        const bool use_masking = _params.optimization.transparent_background ||
+                                 mask_mode == lfs::core::param::MaskMode::Segment ||
+                                 mask_mode == lfs::core::param::MaskMode::Ignore;
 
         while (auto batch_opt = val_dataloader->next()) {
             auto& batch = *batch_opt;

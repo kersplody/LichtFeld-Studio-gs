@@ -118,6 +118,7 @@ namespace lfs::core {
             opt_json["enable_eval"] = enable_eval;
             opt_json["eval_final_checkpoint"] = eval_final_checkpoint;
             opt_json["enable_save_eval_images"] = enable_save_eval_images;
+            opt_json["transparent_background"] = transparent_background;
             opt_json["headless"] = headless;
             const auto canonical_strategy = canonical_strategy_name(strategy);
             opt_json["strategy"] = canonical_strategy.empty() ? strategy : std::string(canonical_strategy);
@@ -337,6 +338,9 @@ namespace lfs::core {
             }
             if (json.contains("enable_save_eval_images")) {
                 params.enable_save_eval_images = json["enable_save_eval_images"];
+            }
+            if (json.contains("transparent_background")) {
+                params.transparent_background = json["transparent_background"];
             }
             if (json.contains("headless")) {
                 params.headless = json["headless"];

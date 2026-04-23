@@ -194,6 +194,7 @@ namespace {
             ::args::Flag enable_eval(output_group, "eval", "Enable evaluation during training", {"eval"});
             ::args::Flag eval_final_checkpoint(output_group, "eval_final_checkpoint", "Run evaluation on the final checkpoint even if it is not in eval_steps", {"eval-final", "eval-final-checkpoint"});
             ::args::Flag enable_save_eval_images(output_group, "save_eval_images", "Save evaluation comparison images (GT vs rendered)", {"save-eval-images"});
+            ::args::Flag transparent_background(output_group, "transparent_background", "Treat alpha-zero/masked pixels as transparent scene background during training", {"transparent-background"});
             ::args::Flag save_depth(output_group, "save_depth", "[TODO] Save depth maps during training (not yet implemented)", {"save-depth"});
             ::args::ValueFlagList<std::string> timelapse_images(output_group, "timelapse_images", "Image filenames to render timelapse images for", {"timelapse-images"});
             ::args::ValueFlag<int> timelapse_every(output_group, "timelapse_every", "Render timelapse image every N iterations (default: 50)", {"timelapse-every"});
@@ -565,6 +566,7 @@ namespace {
                                         debug_python_flag = bool(debug_python),
                                         debug_python_port_val = cli_option_present({"--debug-python-port"}) ? std::optional<int>(::args::get(debug_python_port)) : std::optional<int>(),
                                         enable_save_eval_images_flag = bool(enable_save_eval_images),
+                                        transparent_background_flag = bool(transparent_background),
                                         bg_modulation_flag = bool(bg_modulation),
                                         random_flag = bool(random),
                                         gut_flag = bool(gut),
@@ -640,6 +642,7 @@ namespace {
                 setFlag(debug_python_flag, opt.debug_python);
                 setVal(debug_python_port_val, opt.debug_python_port);
                 setFlag(enable_save_eval_images_flag, opt.enable_save_eval_images);
+                setFlag(transparent_background_flag, opt.transparent_background);
                 setFlag(bg_modulation_flag, opt.bg_modulation);
                 setFlag(random_flag, opt.random);
                 setFlag(gut_flag, opt.gut);

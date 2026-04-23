@@ -270,6 +270,7 @@ namespace lfs::training {
 
             const auto mask_mode = opt_params.mask_mode;
             const bool use_masking =
+                opt_params.transparent_background ||
                 mask_mode == lfs::core::param::MaskMode::Segment ||
                 mask_mode == lfs::core::param::MaskMode::Ignore;
 
@@ -1180,6 +1181,7 @@ namespace lfs::training {
 
         const auto mode = opt_params.mask_mode;
         const Tensor mask_2d = mask.ndim() == 3 ? mask.squeeze(0) : mask;
+        const bool transparent_supervision = opt_params.transparent_background;
 
         Tensor loss, grad_corrected, grad_raw, grad_alpha;
         const bool use_decoupled_appearance_loss =
@@ -1187,7 +1189,7 @@ namespace lfs::training {
             raw_rendered.numel() > 0 &&
             opt_params.lambda_dssim > 0.0f;
 
-        if (mode == param::MaskMode::Segment || mode == param::MaskMode::Ignore) {
+        if (mode == param::MaskMode::Segment || mode == param::MaskMode::Ignore || transparent_supervision) {
             if (use_decoupled_appearance_loss) {
                 auto [loss_tensor, ctx] = lfs::training::kernels::masked_decoupled_fused_l1_ssim_forward(
                     corrected, raw_rendered, gt_image, mask_2d, opt_params.lambda_dssim,
@@ -1229,7 +1231,7 @@ namespace lfs::training {
             }
 
             // Segment: opacity penalty for background
-            if (mode == param::MaskMode::Segment && alpha.is_valid()) {
+            if (mode == param::MaskMode::Segment && !transparent_supervision && alpha.is_valid()) {
                 const Tensor alpha_2d = alpha.ndim() == 3 ? alpha.squeeze(0) : alpha;
                 const Tensor bg_mask = Tensor::full(mask_2d.shape(), 1.0f, mask_2d.device()) - mask_2d;
                 const Tensor penalty_weights = bg_mask.pow(opt_params.mask_opacity_penalty_power);
@@ -1238,6 +1240,14 @@ namespace lfs::training {
                 const float inv_pixels = opt_params.mask_opacity_penalty_weight / static_cast<float>(alpha_2d.numel());
                 grad_alpha = penalty_weights * inv_pixels;
                 loss = loss + penalty;
+            }
+
+            if (transparent_supervision && alpha.is_valid()) {
+                const Tensor alpha_2d = alpha.ndim() == 3 ? alpha.squeeze(0) : alpha;
+                const Tensor alpha_loss = (alpha_2d - mask_2d).abs().mean() * ALPHA_CONSISTENCY_WEIGHT;
+                loss = loss + alpha_loss;
+                grad_alpha = (alpha_2d - mask_2d).sign() *
+                             (ALPHA_CONSISTENCY_WEIGHT / static_cast<float>(alpha_2d.numel()));
             }
 
         } else if (mode == param::MaskMode::AlphaConsistent) {
@@ -1899,9 +1909,14 @@ namespace lfs::training {
             // Print configuration
             LOG_INFO("Visualization: {}", params.optimization.headless ? "disabled" : "enabled");
             LOG_INFO("Strategy: {}", params.optimization.strategy);
-            if (params.optimization.mask_mode != lfs::core::param::MaskMode::None) {
+            if (params.optimization.transparent_background ||
+                params.optimization.mask_mode != lfs::core::param::MaskMode::None) {
                 static constexpr const char* MASK_MODE_NAMES[] = {"none", "segment", "ignore", "alpha_consistent"};
-                LOG_INFO("Mask mode: {}", MASK_MODE_NAMES[static_cast<int>(params.optimization.mask_mode)]);
+                if (params.optimization.transparent_background) {
+                    LOG_INFO("Transparent-background supervision enabled");
+                } else {
+                    LOG_INFO("Mask mode: {}", MASK_MODE_NAMES[static_cast<int>(params.optimization.mask_mode)]);
+                }
             }
             if (current_iteration_ > 0) {
                 LOG_INFO("Starting from iteration: {}", current_iteration_.load());
@@ -2730,7 +2745,8 @@ namespace lfs::training {
                     lfs::core::Tensor tile_loss;
                     lfs::core::Tensor tile_grad;
 
-                    const bool use_mask = params_.optimization.mask_mode != lfs::core::param::MaskMode::None &&
+                    const bool use_mask = (params_.optimization.transparent_background ||
+                                           params_.optimization.mask_mode != lfs::core::param::MaskMode::None) &&
                                           (cam->has_mask() || (params_.optimization.use_alpha_as_mask && cam->has_alpha()));
                     if (use_mask) {
                         lfs::core::Tensor mask;
@@ -2822,11 +2838,13 @@ namespace lfs::training {
                     lfs::core::Tensor mask_tile;
 
                     // 1) Compute photometric loss (populates ssim_map in workspace)
-                    const bool use_mask = params_.optimization.mask_mode != lfs::core::param::MaskMode::None &&
+                    const bool use_mask = (params_.optimization.transparent_background ||
+                                           params_.optimization.mask_mode != lfs::core::param::MaskMode::None) &&
                                           (cam->has_mask() || (params_.optimization.use_alpha_as_mask && cam->has_alpha()));
                     const bool used_masked_fused =
                         use_mask &&
-                        (params_.optimization.mask_mode == lfs::core::param::MaskMode::Segment ||
+                        (params_.optimization.transparent_background ||
+                         params_.optimization.mask_mode == lfs::core::param::MaskMode::Segment ||
                          params_.optimization.mask_mode == lfs::core::param::MaskMode::Ignore) &&
                         params_.optimization.lambda_dssim > 0.0f;
                     if (use_mask) {
@@ -3446,7 +3464,8 @@ namespace lfs::training {
 
             const bool alpha_available = scene_ && scene_->imagesHaveAlpha();
             PipelinedMaskConfig mask_pipeline_config;
-            if (params_.optimization.mask_mode != lfs::core::param::MaskMode::None) {
+            if (params_.optimization.transparent_background ||
+                params_.optimization.mask_mode != lfs::core::param::MaskMode::None) {
                 mask_pipeline_config.invert_masks = params_.optimization.invert_masks;
                 mask_pipeline_config.mask_threshold = params_.optimization.mask_threshold;
                 if (params_.optimization.use_alpha_as_mask && alpha_available) {

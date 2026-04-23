@@ -130,6 +130,7 @@ namespace lfs::core {
             bool enable_eval = false;                          // Only evaluate when explicitly enabled
             bool eval_final_checkpoint = false;                // Always evaluate the final checkpoint
             bool enable_save_eval_images = true;               // Save during evaluation images
+            bool transparent_background = false;               // Treat masked/alpha-zero pixels as absent scene content during training
             bool headless = false;                             // Disable visualization during training
             bool auto_train = false;                           // Start training immediately on startup
             bool no_splash = false;                            // Skip splash screen on startup
