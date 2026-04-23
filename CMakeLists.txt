@@ -156,6 +156,59 @@ set(CMAKE_CUDA_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 
+set(LFS_USER_PROVIDED_CUDA_ARCHITECTURES OFF)
+if(DEFINED CMAKE_CUDA_ARCHITECTURES AND NOT CMAKE_CUDA_ARCHITECTURES STREQUAL "")
+    set(LFS_USER_PROVIDED_CUDA_ARCHITECTURES ON)
+endif()
+
+function(lfs_cuda_architectures_to_torch out_var)
+    set(_torch_archs "")
+    foreach(_arch IN LISTS ARGN)
+        if(_arch MATCHES "^([0-9]+)(-virtual)?$")
+            set(_arch_digits "${CMAKE_MATCH_1}")
+            set(_torch_suffix "")
+            if(CMAKE_MATCH_2)
+                set(_torch_suffix "+PTX")
+            endif()
+
+            string(LENGTH "${_arch_digits}" _arch_len)
+            if(_arch_len EQUAL 2)
+                string(SUBSTRING "${_arch_digits}" 0 1 _arch_major)
+                string(SUBSTRING "${_arch_digits}" 1 1 _arch_minor)
+            elseif(_arch_len EQUAL 3)
+                string(SUBSTRING "${_arch_digits}" 0 2 _arch_major)
+                string(SUBSTRING "${_arch_digits}" 2 1 _arch_minor)
+            else()
+                message(FATAL_ERROR "Unsupported CUDA architecture '${_arch}' for TORCH_CUDA_ARCH_LIST")
+            endif()
+
+            list(APPEND _torch_archs "${_arch_major}.${_arch_minor}${_torch_suffix}")
+        elseif(_arch MATCHES "^[0-9]+-real$")
+            string(REGEX REPLACE "-real$" "" _arch_digits "${_arch}")
+            string(LENGTH "${_arch_digits}" _arch_len)
+            if(_arch_len EQUAL 2)
+                string(SUBSTRING "${_arch_digits}" 0 1 _arch_major)
+                string(SUBSTRING "${_arch_digits}" 1 1 _arch_minor)
+            elseif(_arch_len EQUAL 3)
+                string(SUBSTRING "${_arch_digits}" 0 2 _arch_major)
+                string(SUBSTRING "${_arch_digits}" 2 1 _arch_minor)
+            else()
+                message(FATAL_ERROR "Unsupported CUDA architecture '${_arch}' for TORCH_CUDA_ARCH_LIST")
+            endif()
+
+            list(APPEND _torch_archs "${_arch_major}.${_arch_minor}")
+        elseif(_arch STREQUAL "native")
+            list(APPEND _torch_archs "${DETECTED_COMPUTE_CAP}")
+        endif()
+    endforeach()
+
+    if(_torch_archs)
+        list(REMOVE_DUPLICATES _torch_archs)
+        string(REPLACE ";" " " _torch_archs "${_torch_archs}")
+        set(${out_var} "${_torch_archs}" PARENT_SCOPE)
+    endif()
+endfunction()
+
 # Parallel build
 include(ProcessorCount)
 ProcessorCount(total_cores)
@@ -212,10 +265,6 @@ else()
 endif()
 
 
-if(DEFINED TORCH_CUDA_ARCH_LIST)
-    unset(TORCH_CUDA_ARCH_LIST CACHE)
-endif()
-
 if(BUILD_CUDA_PTX_ONLY)
     # PTX-only: JIT compile at runtime, smaller binary
     if(NOT BUILD_CUDA_MIN_SM MATCHES "^[0-9]+$")
@@ -234,7 +283,14 @@ if(BUILD_CUDA_PTX_ONLY)
     message(STATUS "CUDA: PTX-only (SM >= ${BUILD_CUDA_MIN_SM}, JIT at runtime)")
 else()
     # Native GPU only
-    set(TORCH_CUDA_ARCH_LIST "${DETECTED_COMPUTE_CAP}" CACHE STRING "" FORCE)
+    if(LFS_USER_PROVIDED_CUDA_ARCHITECTURES)
+        lfs_cuda_architectures_to_torch(_lfs_torch_cuda_arch_list ${CMAKE_CUDA_ARCHITECTURES})
+        if(_lfs_torch_cuda_arch_list)
+            set(TORCH_CUDA_ARCH_LIST "${_lfs_torch_cuda_arch_list}" CACHE STRING "" FORCE)
+        endif()
+    elseif(NOT TORCH_CUDA_ARCH_LIST)
+        set(TORCH_CUDA_ARCH_LIST "${DETECTED_COMPUTE_CAP}" CACHE STRING "" FORCE)
+    endif()
     message(STATUS "CUDA: native (${LichtFeld-Studio_CUDA_ARCH})")
 endif()
 
@@ -296,9 +352,10 @@ find_package(pxr CONFIG REQUIRED)
 find_package(assimp REQUIRED)
 find_package(RmlUi CONFIG REQUIRED)
 
-# TORCH_CUDA_ARCH_LIST is already defined by Torch
-# use it here as the global default CUDA architecture list too
-if(LichtFeld-Studio_CUDA_ARCH)
+# TORCH_CUDA_ARCH_LIST is already defined by Torch.
+# Use the detected architecture as the default, but respect an explicit
+# -DCMAKE_CUDA_ARCHITECTURES=... from the configure command.
+if(LichtFeld-Studio_CUDA_ARCH AND NOT CMAKE_CUDA_ARCHITECTURES)
     set(CMAKE_CUDA_ARCHITECTURES "${LichtFeld-Studio_CUDA_ARCH}" CACHE STRING "CUDA architectures" FORCE)
 endif()
 
@@ -411,7 +468,7 @@ add_executable(${PROJECT_NAME}
 
 
 set_target_properties(${PROJECT_NAME} PROPERTIES
-        CUDA_ARCHITECTURES "${LichtFeld-Studio_CUDA_ARCH}"
+        CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}"
         CUDA_SEPARABLE_COMPILATION OFF
 )
 

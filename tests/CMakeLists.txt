@@ -312,7 +312,7 @@ add_executable(lichtfeld_tests ${TEST_SOURCES})
 
 # Set CUDA architectures
 set_target_properties(lichtfeld_tests PROPERTIES
-    CUDA_ARCHITECTURES "${LichtFeld-Studio_CUDA_ARCH}"
+    CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}"
     CUDA_SEPARABLE_COMPILATION ON
     CUDA_RESOLVE_DEVICE_SYMBOLS ON
     CXX_STANDARD 23
@@ -399,7 +399,7 @@ target_compile_options(lichtfeld_tests PRIVATE
 add_executable(lichtfeld_benchmarks ${BENCHMARK_SOURCES})
 
 set_target_properties(lichtfeld_benchmarks PROPERTIES
-    CUDA_ARCHITECTURES "${LichtFeld-Studio_CUDA_ARCH}"
+    CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}"
     CUDA_SEPARABLE_COMPILATION ON
     CUDA_RESOLVE_DEVICE_SYMBOLS ON
     CXX_STANDARD 23
