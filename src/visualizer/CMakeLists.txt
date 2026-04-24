@@ -68,6 +68,10 @@ add_library(lfs_visualizer ${LFS_VIS_LIB_TYPE}
         gui/native_panels.cpp
         gui/layout_state.cpp
         gui/async_task_manager.cpp
+        gui/bounds_gizmo.cpp
+        gui/rotation_gizmo.cpp
+        gui/scale_gizmo.cpp
+        gui/translation_gizmo.cpp
         gui/video_export_utils.cpp
         gui/startup_overlay.cpp
         gui/rml_menu_bar.cpp
@@ -228,7 +232,6 @@ target_link_libraries(lfs_visualizer
         SDL3::SDL3
         imgui::imgui
         implot::implot
-        imguizmo::imguizmo
         Zep::Zep
         glm::glm
         TBB::tbb
