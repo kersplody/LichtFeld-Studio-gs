@@ -2941,15 +2941,29 @@ namespace lfs::training {
                             tile_error_map = tile_error_map.contiguous();
                         }
 
-                        if (use_mask &&
-                            (params_.optimization.mask_mode == lfs::core::param::MaskMode::Segment ||
-                             params_.optimization.mask_mode == lfs::core::param::MaskMode::Ignore)) {
+                        const bool mask_densification_error =
+                            use_mask &&
+                            (params_.optimization.transparent_background ||
+                             params_.optimization.mask_mode == lfs::core::param::MaskMode::Segment ||
+                             params_.optimization.mask_mode == lfs::core::param::MaskMode::Ignore);
+                        if (mask_densification_error) {
                             tile_error_map.mul_(mask_tile);
                         }
                     }
 
                     if (tile_error_map.is_valid() && core::param::is_mrnf_strategy(params_.optimization.strategy)) {
-                        const float map_mean = tile_error_map.mean().item();
+                        float map_mean = tile_error_map.mean().item();
+                        const bool mask_densification_error =
+                            use_mask &&
+                            (params_.optimization.transparent_background ||
+                             params_.optimization.mask_mode == lfs::core::param::MaskMode::Segment ||
+                             params_.optimization.mask_mode == lfs::core::param::MaskMode::Ignore);
+                        if (mask_densification_error && mask_tile.is_valid()) {
+                            const float valid_pixels = mask_tile.sum().item<float>();
+                            if (valid_pixels > 1e-6f) {
+                                map_mean = tile_error_map.sum().item<float>() / valid_pixels;
+                            }
+                        }
                         if (map_mean > 1e-6f)
                             tile_error_map.div_(map_mean);
                     }
