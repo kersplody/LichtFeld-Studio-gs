@@ -109,6 +109,8 @@ namespace lfs::training {
         // Check if we should evaluate at this iteration
         bool should_evaluate(const int iteration) const;
 
+        void set_tile_mode(int tile_mode) { _params.optimization.tile_mode = tile_mode; }
+
         // Main evaluation method
         EvalMetrics evaluate(const int iteration,
                              const lfs::core::SplatData& splatData,
@@ -129,7 +131,7 @@ namespace lfs::training {
 
     private:
         // Configuration
-        const lfs::core::param::TrainingParameters _params;
+        lfs::core::param::TrainingParameters _params;
 
         // Metrics
         std::unique_ptr<PSNR> _psnr_metric;

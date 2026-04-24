@@ -17,6 +17,7 @@
 #include <cassert>
 #include <chrono>
 #include <cmath>
+#include <expected>
 #include <iostream>
 #include <numeric>
 #include <stdexcept>
@@ -82,6 +83,204 @@ namespace lfs::training {
                 return mask.unsqueeze(0).expand({layout.c, layout.h, layout.w});
             }
             return mask.unsqueeze(0).unsqueeze(0).expand({layout.n, layout.c, layout.h, layout.w});
+        }
+
+        lfs::core::Tensor ensure_rgb_chw(lfs::core::Tensor image) {
+            if (!image.is_valid())
+                return image;
+
+            if (image.ndim() == 4 && image.shape()[0] == 1) {
+                image = image.squeeze(0);
+            }
+
+            if (image.ndim() != 3)
+                return image;
+
+            const auto shape = image.shape();
+            if (shape[0] == 3) {
+                return image.contiguous();
+            }
+            if (shape[0] == 4) {
+                return image.slice(0, 0, 3).contiguous();
+            }
+            if (shape[2] == 3) {
+                return image.permute({2, 0, 1}).contiguous();
+            }
+            if (shape[2] == 4) {
+                return image.slice(2, 0, 3).permute({2, 0, 1}).contiguous();
+            }
+            return image;
+        }
+
+        bool is_oom_error(const std::string& error) {
+            return error.find("OUT_OF_MEMORY") != std::string::npos ||
+                   error.find("out of memory") != std::string::npos;
+        }
+
+        int normalized_tile_mode(int tile_mode) {
+            if (tile_mode >= 4)
+                return 4;
+            if (tile_mode >= 2)
+                return 2;
+            return 1;
+        }
+
+        int next_tile_mode(int tile_mode) {
+            return tile_mode <= 1 ? 2 : 4;
+        }
+
+        std::pair<int, int> tile_grid_for_mode(int tile_mode) {
+            switch (normalized_tile_mode(tile_mode)) {
+            case 2:
+                return {2, 1};
+            case 4:
+                return {2, 2};
+            default:
+                return {1, 1};
+            }
+        }
+
+        void release_gsplat_eval_context(GsplatRasterizeContext& ctx) {
+            if (ctx.isect_ids_ptr != nullptr) {
+                cudaFree(ctx.isect_ids_ptr);
+                ctx.isect_ids_ptr = nullptr;
+            }
+            if (ctx.flatten_ids_ptr != nullptr) {
+                cudaFree(ctx.flatten_ids_ptr);
+                ctx.flatten_ids_ptr = nullptr;
+            }
+            auto& arena = lfs::core::GlobalArenaManager::instance().get_arena();
+            arena.end_frame(ctx.frame_id);
+        }
+
+        std::expected<RenderOutput, std::string> render_eval_image_for_tile_mode(
+            lfs::core::Camera& cam,
+            lfs::core::SplatData& splat_data,
+            lfs::core::Tensor& background,
+            const lfs::core::param::TrainingParameters& params,
+            int tile_mode) {
+            tile_mode = normalized_tile_mode(tile_mode);
+            const auto [tile_rows, tile_cols] = tile_grid_for_mode(tile_mode);
+            const int full_width = cam.image_width();
+            const int full_height = cam.image_height();
+
+            if (tile_rows == 1 && tile_cols == 1) {
+                if (params.optimization.gut) {
+                    auto result = gsplat_rasterize_forward(
+                        cam, splat_data, background, 0, 0, 0, 0,
+                        1.0f, false, GsplatRenderMode::RGB, true);
+                    if (!result)
+                        return std::unexpected(result.error());
+                    auto output = std::move(result->first);
+                    release_gsplat_eval_context(result->second);
+                    output.image = ensure_rgb_chw(std::move(output.image));
+                    return output;
+                }
+
+                auto result = fast_rasterize_forward(
+                    cam, splat_data, background, 0, 0, 0, 0,
+                    params.optimization.mip_filter);
+                if (!result)
+                    return std::unexpected(result.error());
+                auto output = std::move(result->first);
+                auto& arena = lfs::core::GlobalArenaManager::instance().get_arena();
+                arena.end_frame(result->second.forward_ctx.frame_id);
+                output.image = ensure_rgb_chw(std::move(output.image));
+                return output;
+            }
+
+            RenderOutput stitched;
+            stitched.image = lfs::core::Tensor::zeros(
+                {static_cast<size_t>(3), static_cast<size_t>(full_height), static_cast<size_t>(full_width)},
+                lfs::core::Device::CUDA);
+            stitched.width = full_width;
+            stitched.height = full_height;
+
+            const int base_tile_width = (full_width + tile_cols - 1) / tile_cols;
+            const int base_tile_height = (full_height + tile_rows - 1) / tile_rows;
+
+            for (int tile_row = 0; tile_row < tile_rows; ++tile_row) {
+                for (int tile_col = 0; tile_col < tile_cols; ++tile_col) {
+                    const int tile_x_offset = tile_col * base_tile_width;
+                    const int tile_y_offset = tile_row * base_tile_height;
+                    const int tile_width = std::min(base_tile_width, full_width - tile_x_offset);
+                    const int tile_height = std::min(base_tile_height, full_height - tile_y_offset);
+                    if (tile_width <= 0 || tile_height <= 0)
+                        continue;
+
+                    RenderOutput tile_output;
+                    if (params.optimization.gut) {
+                        auto result = gsplat_rasterize_forward(
+                            cam, splat_data, background,
+                            tile_x_offset, tile_y_offset, tile_width, tile_height,
+                            1.0f, false, GsplatRenderMode::RGB, true);
+                        if (!result)
+                            return std::unexpected(result.error());
+                        tile_output = std::move(result->first);
+                        tile_output.image = ensure_rgb_chw(std::move(tile_output.image));
+                        stitched.image
+                            .slice(1, tile_y_offset, tile_y_offset + tile_height)
+                            .slice(2, tile_x_offset, tile_x_offset + tile_width) = tile_output.image;
+                        release_gsplat_eval_context(result->second);
+                    } else {
+                        auto result = fast_rasterize_forward(
+                            cam, splat_data, background,
+                            tile_x_offset, tile_y_offset, tile_width, tile_height,
+                            params.optimization.mip_filter);
+                        if (!result)
+                            return std::unexpected(result.error());
+                        tile_output = std::move(result->first);
+                        tile_output.image = ensure_rgb_chw(std::move(tile_output.image));
+                        stitched.image
+                            .slice(1, tile_y_offset, tile_y_offset + tile_height)
+                            .slice(2, tile_x_offset, tile_x_offset + tile_width) = tile_output.image;
+                        auto& arena = lfs::core::GlobalArenaManager::instance().get_arena();
+                        arena.end_frame(result->second.forward_ctx.frame_id);
+                    }
+                }
+            }
+
+            return stitched;
+        }
+
+        std::expected<RenderOutput, std::string> render_eval_image_with_oom_retry(
+            lfs::core::Camera& cam,
+            lfs::core::SplatData& splat_data,
+            lfs::core::Tensor& background,
+            const lfs::core::param::TrainingParameters& params) {
+            int tile_mode = normalized_tile_mode(params.optimization.tile_mode);
+
+            while (true) {
+                auto result = render_eval_image_for_tile_mode(
+                    cam, splat_data, background, params, tile_mode);
+                if (result)
+                    return result;
+
+                if (!is_oom_error(result.error()) || tile_mode >= 4)
+                    return result;
+
+                const int upgraded = next_tile_mode(tile_mode);
+                LOG_WARN("Eval OOM for camera '{}'. Retrying with tile mode {} -> {}",
+                         cam.image_name(), tile_mode, upgraded);
+                tile_mode = upgraded;
+            }
+        }
+
+        void sync_camera_dimensions_to_chw_image(lfs::core::Camera& cam,
+                                                 const lfs::core::Tensor& image) {
+            if (!image.is_valid() || image.ndim() != 3 || image.shape()[0] != 3)
+                return;
+
+            const int h = static_cast<int>(image.shape()[1]);
+            const int w = static_cast<int>(image.shape()[2]);
+            if (w <= 0 || h <= 0)
+                return;
+
+            if (cam.image_width() != w || cam.image_height() != h) {
+                LOG_DEBUG("Eval: camera '{}' render size adjusted {}x{} -> {}x{} to match target",
+                          cam.image_name(), cam.image_width(), cam.image_height(), w, h);
+                cam.set_image_dimensions(w, h);
+            }
         }
     } // namespace
 
@@ -448,6 +647,7 @@ namespace lfs::training {
             if (gt_image.device() != lfs::core::Device::CUDA) {
                 gt_image = gt_image.to(lfs::core::Device::CUDA);
             }
+            gt_image = ensure_rgb_chw(std::move(gt_image));
 
             lfs::core::Tensor mask;
             if (use_masking) {
@@ -465,15 +665,27 @@ namespace lfs::training {
                     mask = lfs::core::Tensor();
                 }
             }
+            gt_image = ensure_rgb_chw(std::move(gt_image));
+            sync_camera_dimensions_to_chw_image(*cam, gt_image);
 
             auto& splatData_mutable = const_cast<lfs::core::SplatData&>(splatData);
-            RenderOutput r_output;
-            if (_params.optimization.gut) {
-                r_output = gsplat_rasterize(*cam, splatData_mutable, background,
-                                            1.0f, false, GsplatRenderMode::RGB, true);
-            } else {
-                r_output = fast_rasterize(*cam, splatData_mutable, background, _params.optimization.mip_filter);
+            std::expected<RenderOutput, std::string> render_result =
+                std::unexpected("render not started");
+            try {
+                render_result = render_eval_image_with_oom_retry(
+                    *cam, splatData_mutable, background, _params);
+            } catch (const std::exception& e) {
+                LOG_WARN("Eval: skipping camera '{}' (render threw: {})", cam->image_name(), e.what());
+                skipped_images++;
+                continue;
             }
+            if (!render_result) {
+                LOG_WARN("Eval: skipping camera '{}' (render failed: {})",
+                         cam->image_name(), render_result.error());
+                skipped_images++;
+                continue;
+            }
+            RenderOutput r_output = std::move(*render_result);
             r_output.image = r_output.image.clamp(0.0f, 1.0f);
 
             float psnr = 0.0f;
@@ -482,7 +694,8 @@ namespace lfs::training {
                 psnr = _psnr_metric->compute(r_output.image, gt_image, mask);
                 ssim = _ssim_metric->compute(r_output.image, gt_image, mask);
             } catch (const std::exception& e) {
-                LOG_WARN("Eval: skipping camera '{}' (metric computation failed: {})", cam->image_name(), e.what());
+                LOG_WARN("Eval: skipping camera '{}' (metric computation failed: {}; pred={}, target={})",
+                         cam->image_name(), e.what(), r_output.image.shape().str(), gt_image.shape().str());
                 skipped_images++;
                 continue;
             }

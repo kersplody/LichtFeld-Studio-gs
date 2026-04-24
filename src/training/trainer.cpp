@@ -3271,6 +3271,7 @@ namespace lfs::training {
                 // Clean evaluation - let the evaluator handle everything
                 if (evaluator_->is_enabled() && evaluator_->should_evaluate(iter)) {
                     evaluator_->print_evaluation_header(iter);
+                    evaluator_->set_tile_mode(params_.optimization.tile_mode);
                     auto metrics = evaluator_->evaluate(iter,
                                                         strategy_->get_model(),
                                                         val_dataset_,
@@ -3629,6 +3630,7 @@ namespace lfs::training {
                 evaluator_->is_enabled() &&
                 !evaluator_->should_evaluate(get_total_iterations())) {
                 evaluator_->print_evaluation_header(get_total_iterations());
+                evaluator_->set_tile_mode(params_.optimization.tile_mode);
                 auto metrics = evaluator_->evaluate(get_total_iterations(),
                                                     strategy_->get_model(),
                                                     val_dataset_,
