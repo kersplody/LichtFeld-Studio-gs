@@ -296,7 +296,7 @@ namespace lfs::vis::gui {
                 ImVec2(projected.quad[3].x, projected.quad[3].y),
             };
             draw_list.AddConvexPolyFilled(points, 4,
-                                           withAlpha(projected.plane.color, active ? 0.36f : (emphasized ? 0.25f : 0.12f)));
+                                          withAlpha(projected.plane.color, active ? 0.36f : (emphasized ? 0.25f : 0.12f)));
             draw_list.AddPolyline(points, 4, IM_COL32(0, 0, 0, active ? 165 : 95), ImDrawFlags_Closed, active ? 2.6f : 2.0f);
             draw_list.AddPolyline(points, 4, withAlpha(projected.plane.color, active ? 0.95f : 0.68f),
                                   ImDrawFlags_Closed, active ? 1.8f : 1.2f);
