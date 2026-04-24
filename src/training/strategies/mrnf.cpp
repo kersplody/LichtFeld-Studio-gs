@@ -3,8 +3,10 @@
  * SPDX-License-Identifier: GPL-3.0-or-later */
 
 #include "mrnf.hpp"
+#include "core/image_io.hpp"
 #include "core/logger.hpp"
 #include "edge_rasterizer.hpp"
+#include "io/cuda/image_format_kernels.cuh"
 #include "io/pipelined_image_loader.hpp"
 #include "kernels/densification_kernels.hpp"
 #include "kernels/image_kernels.hpp"
@@ -132,6 +134,59 @@ namespace lfs::training {
             }
 
             make_fresh();
+        }
+
+        [[nodiscard]] lfs::core::Tensor load_alpha_mask_for_edge_guidance(
+            const lfs::core::Camera& cam,
+            const lfs::core::param::OptimizationParameters& params,
+            const int resize_factor,
+            const int max_width) {
+            auto [img_data, width, height, channels] = lfs::core::load_image_with_alpha(
+                cam.image_path(), resize_factor, max_width);
+
+            if (!img_data || channels != 4) {
+                if (img_data)
+                    lfs::core::free_image(img_data);
+                return {};
+            }
+
+            const size_t H = static_cast<size_t>(height);
+            const size_t W = static_cast<size_t>(width);
+            auto cpu_tensor = lfs::core::Tensor::from_blob(
+                img_data,
+                lfs::core::TensorShape({H, W, 4}),
+                lfs::core::Device::CPU,
+                lfs::core::DataType::UInt8);
+            auto gpu_uint8 = cpu_tensor.to(lfs::core::Device::CUDA);
+            lfs::core::free_image(img_data);
+
+            auto rgb_scratch = lfs::core::Tensor::zeros(
+                lfs::core::TensorShape({3, H, W}),
+                lfs::core::Device::CUDA,
+                lfs::core::DataType::Float32);
+            auto mask = lfs::core::Tensor::zeros(
+                lfs::core::TensorShape({H, W}),
+                lfs::core::Device::CUDA,
+                lfs::core::DataType::Float32);
+
+            lfs::io::cuda::launch_uint8_rgba_split_to_float32_rgb_and_alpha(
+                gpu_uint8.ptr<uint8_t>(), rgb_scratch.ptr<float>(), mask.ptr<float>(),
+                H, W, nullptr);
+            gpu_uint8 = lfs::core::Tensor();
+            rgb_scratch = lfs::core::Tensor();
+
+            if (params.invert_masks)
+                lfs::io::cuda::launch_mask_invert(mask.ptr<float>(), H, W, nullptr);
+            if (params.mask_threshold > 0.0f)
+                lfs::io::cuda::launch_mask_threshold(mask.ptr<float>(), H, W, params.mask_threshold, nullptr);
+
+            if (cam.is_undistort_prepared()) {
+                const auto scaled = lfs::core::scale_undistort_params(
+                    cam.undistort_params(), static_cast<int>(W), static_cast<int>(H));
+                mask = lfs::core::undistort_mask(mask, scaled, nullptr);
+            }
+
+            return mask;
         }
 
         [[nodiscard]] bool has_zero_dimension(const lfs::core::TensorShape& shape) {
@@ -1086,6 +1141,22 @@ namespace lfs::training {
                 cam->set_image_dimensions(img_w, img_h);
             }
 
+            lfs::core::Tensor edge_mask;
+            if (_params->transparent_background ||
+                _params->mask_mode == lfs::core::param::MaskMode::Segment ||
+                _params->mask_mode == lfs::core::param::MaskMode::Ignore) {
+                if (_params->use_alpha_as_mask && cam->has_alpha()) {
+                    edge_mask = load_alpha_mask_for_edge_guidance(
+                        *cam, *_params, _views->get_resize_factor(), _views->get_max_width());
+                } else if (cam->has_mask()) {
+                    edge_mask = cam->load_and_get_mask(
+                        _views->get_resize_factor(),
+                        _views->get_max_width(),
+                        _params->invert_masks,
+                        _params->mask_threshold);
+                }
+            }
+
             if (!canny_ws.nms_output.is_valid() ||
                 img_h != static_cast<int>(canny_ws.nms_output.shape()[0]) ||
                 img_w != static_cast<int>(canny_ws.nms_output.shape()[1])) {
@@ -1093,6 +1164,12 @@ namespace lfs::training {
             }
 
             apply_canny_filter(image, canny_ws);
+            if (edge_mask.is_valid() &&
+                edge_mask.ndim() == 2 &&
+                edge_mask.shape()[0] == canny_ws.nms_output.shape()[0] &&
+                edge_mask.shape()[1] == canny_ws.nms_output.shape()[1]) {
+                canny_ws.nms_output.mul_(edge_mask);
+            }
             normalize_by_positive_median_inplace(canny_ws.nms_output);
 
             lfs::core::Tensor bg;
