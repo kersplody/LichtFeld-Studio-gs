@@ -19,17 +19,16 @@ namespace lfs::rendering::config {
     DEF float max_fragment_alpha = 0.999f;
     DEF float transmittance_threshold = 1e-4f;
     DEF float max_pixel_radius = 512.0f;
+    DEF float max_raw_scale = 20.0f;  // exp(40) stays finite in float, with margin.
+    DEF float max_blend_color = 4.0f; // SH output is typically below 2.0.
     DEF float clip_xy = 1.4f;
     DEF int block_size_preprocess = 128;
     DEF int block_size_preprocess_backward = 128;
-    DEF int block_size_apply_depth_ordering = 256;
     DEF int block_size_create_instances = 256;
     DEF int block_size_extract_instance_ranges = 256;
-    DEF int block_size_extract_bucket_counts = 256;
     DEF int tile_width = 16;
     DEF int tile_height = 16;
     DEF int block_size_blend = tile_width * tile_height;
-    DEF int n_sequential_threshold = 4;
 
     // Selection group colors (0 = center marker, 1-255 = groups). Defined in forward.cu.
     constexpr int MAX_SELECTION_GROUPS = 256;
