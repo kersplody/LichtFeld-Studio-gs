@@ -344,7 +344,7 @@ namespace lfs::rendering::kernels::forward {
         const float det_for_opacity_safe = fmaxf(det_for_opacity, 1e-8f);
         const float output_opacity = opacity * sqrtf(det_orig / det_for_opacity_safe);
         const bool low_opacity_query_only = active &&
-            output_opacity < config::min_alpha_threshold && include_low_opacity_selection_queries;
+                                            output_opacity < config::min_alpha_threshold && include_low_opacity_selection_queries;
         if (output_opacity < config::min_alpha_threshold && !include_low_opacity_selection_queries)
             active = false;
         if (__ballot_sync(0xffffffffu, active) == 0)
