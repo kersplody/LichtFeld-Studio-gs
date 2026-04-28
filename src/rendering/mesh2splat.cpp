@@ -435,7 +435,7 @@ namespace lfs::rendering {
                 break;
             case 4:
                 format = GL_RGBA;
-                internal_format = is_srgb ?  GL_SRGB8_ALPHA8 : GL_RGBA8;
+                internal_format = is_srgb ? GL_SRGB8_ALPHA8 : GL_RGBA8;
                 break;
             default: return 0;
             }
