@@ -149,7 +149,7 @@ namespace lfs::vis {
         }
 
         [[nodiscard]] const core::SceneNode* findTransformHelperChild(const core::Scene& scene,
-                                                                       const core::SceneNode& data_node) {
+                                                                      const core::SceneNode& data_node) {
             for (const auto child_id : data_node.children) {
                 const auto* child = scene.getNodeById(child_id);
                 if (!child || child->type != core::NodeType::GROUP) {
@@ -164,7 +164,7 @@ namespace lfs::vis {
         }
 
         [[nodiscard]] const core::SceneNode* findDataParentForTransformHelper(const core::Scene& scene,
-                                                                               const core::SceneNode& transform_node) {
+                                                                              const core::SceneNode& transform_node) {
             if (transform_node.parent_id == core::NULL_NODE || !isTransformHelperName(transform_node.name)) {
                 return nullptr;
             }

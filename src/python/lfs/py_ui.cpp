@@ -5,7 +5,6 @@
 #include "py_ui.hpp"
 #include "control/command_api.hpp"
 #include "core/event_bridge/command_center_bridge.hpp"
-#include "python/python_runtime.hpp"
 #include "core/event_bridge/localization_manager.hpp"
 #include "core/events.hpp"
 #include "core/image_io.hpp"
@@ -4870,8 +4869,7 @@ namespace lfs::python {
               "Free all dynamic textures associated with a plugin");
 
         // Asset Manager save callback
-        m.def("set_save_asset_callback",
-              [](nb::callable save_cb) {
+        m.def("set_save_asset_callback", [](nb::callable save_cb) {
                   g_save_asset_callback = std::move(save_cb);
                   set_save_asset_callback(
                       [](const char* node_name) {
@@ -4883,10 +4881,7 @@ namespace lfs::python {
                                   LOG_ERROR("Save asset callback failed: {}", e.what());
                               }
                           }
-                      });
-              },
-              nb::arg("save_cb"),
-              "Set callback for Save Asset operation from scene graph");
+                      }); }, nb::arg("save_cb"), "Set callback for Save Asset operation from scene graph");
 
         nb::class_<PyDynamicTexture>(m, "DynamicTexture")
             .def(nb::init<>())
