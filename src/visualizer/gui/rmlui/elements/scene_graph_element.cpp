@@ -1801,7 +1801,7 @@ namespace lfs::vis::gui {
     }
 
     void SceneGraphElement::showModelsHeaderContextMenu(const float mouse_x,
-                                                          const float mouse_y) {
+                                                        const float mouse_y) {
         auto* gui = services().guiOrNull();
         if (!gui)
             return;
@@ -2061,7 +2061,7 @@ namespace lfs::vis::gui {
                            target->GetAttribute<Rml::String>("data-role", "") == "models-header") {
                     // Right-click on Models header - show header context menu
                     showModelsHeaderContextMenu(event.GetParameter("mouse_x", 0.0f),
-                                                  event.GetParameter("mouse_y", 0.0f));
+                                                event.GetParameter("mouse_y", 0.0f));
                     event.StopPropagation();
                 }
             }
