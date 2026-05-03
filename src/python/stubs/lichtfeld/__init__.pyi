@@ -1169,6 +1169,18 @@ class ViewInfo:
     def fov_y(self) -> float: ...
 
     @property
+    def orthographic(self) -> bool: ...
+
+    @property
+    def ortho_scale(self) -> float: ...
+
+    @property
+    def ortho_view_extent_world(self) -> float:
+        """
+        Vertical view extent in world units (Blender-compatible orthographic scale). Larger when zoomed out, smaller when zoomed in.
+        """
+
+    @property
     def position(self) -> tuple[float, float, float]:
         """Camera position as (x, y, z) tuple"""
 
@@ -1220,8 +1232,15 @@ def compute_screen_positions(rotation: Tensor, translation: Tensor, width: int, 
         Tensor [N, 2] with (x, y) pixel coordinates for each Gaussian
     """
 
-def get_current_view() -> ViewInfo | None:
-    """Get current viewport camera pose (None if not available)"""
+def get_current_view(panel: str = 'main') -> ViewInfo | None:
+    """
+    Get current viewport camera pose (None if not available).
+
+    Args:
+        panel: 'main' (default) returns the focused viewport, 'left'/'right' returns the
+            per-panel camera. In independent split-view mode, the right panel has its own
+            camera; otherwise both panels share the main camera.
+    """
 
 class CameraState:
     @property
@@ -1236,13 +1255,26 @@ class CameraState:
     @property
     def fov(self) -> float: ...
 
-def get_camera() -> CameraState | None:
+def get_camera(panel: str = 'main') -> CameraState | None:
     """
-    Get current viewport camera state (eye, target, up, fov) or None if unavailable
+    Get current viewport camera state (eye, target, up, fov) or None if unavailable.
+
+    Args:
+        panel: 'main' (default), 'left', or 'right'. 'left'/'right' return the per-panel
+            camera in independent split-view mode; otherwise both panels share the main camera.
     """
 
-def set_camera(eye: tuple[float, float, float], target: tuple[float, float, float], up: tuple[float, float, float] = (0.0, 1.0, 0.0)) -> None:
-    """Move the viewport camera to look from eye toward target"""
+def set_camera(eye: tuple[float, float, float], target: tuple[float, float, float], up: tuple[float, float, float] = (0.0, 1.0, 0.0), panel: str = 'main') -> None:
+    """
+    Move the viewport camera to look from eye toward target.
+
+    Args:
+        eye: camera position (x, y, z).
+        target: look-at target (x, y, z).
+        up: world up vector (default (0, 1, 0)).
+        panel: 'main' (default), 'left', or 'right'. In independent split-view mode the right
+            panel can be moved independently; otherwise this falls back to the main camera.
+    """
 
 def set_camera_fov(fov: float) -> None:
     """Set viewport field of view in degrees"""
