@@ -41,10 +41,10 @@ public:
     // densification step, etc.) to keep the deferred readback correct.
     void resetNumIndicesEstimate();
 
-    void executeProjectionForward(const VulkanGSRendererUniforms& uniforms, VulkanGSPipelineBuffers& buffers, size_t alloc_reserve = 0);
+    void executeProjectionForward(const VulkanGSRendererUniforms& uniforms, VulkanGSPipelineBuffers& buffers, size_t alloc_reserve = 0, bool use_gut_projection = false);
     void executeGenerateKeys(const VulkanGSRendererUniforms& uniforms, VulkanGSPipelineBuffers& buffers);
     void executeComputeTileRanges(const VulkanGSRendererUniforms& uniforms, VulkanGSPipelineBuffers& buffers);
-    void executeRasterizeForward(const VulkanGSRendererUniforms& uniforms, VulkanGSPipelineBuffers& buffers);
+    void executeRasterizeForward(const VulkanGSRendererUniforms& uniforms, VulkanGSPipelineBuffers& buffers, bool use_gut_rasterization = false);
 
     void executeCalculateIndexBufferOffset(VulkanGSPipelineBuffers& buffers);
     void executeSort(const VulkanGSRendererUniforms& uniforms, VulkanGSPipelineBuffers& buffers, int num_bits);
@@ -56,6 +56,7 @@ protected:
         Buffer<int32_t>& output_buffer);
 
     _ComputePipeline pipeline_projection_forward = _ComputePipeline(11);
+    _ComputePipeline pipeline_projection_forward_gut = _ComputePipeline(11);
     _ComputePipeline pipeline_generate_keys = _ComputePipeline(7);
     // 3 bindings: sorted_keys, out_tile_ranges, index_buffer_offset (for num_isects).
     _ComputePipeline pipeline_compute_tile_ranges[2] = {
@@ -64,6 +65,7 @@ protected:
     // Indirect-dispatch setup: reads cumsum tail, writes VkDispatchIndirectCommand.
     _ComputePipeline pipeline_setup_dispatch_indirect = _ComputePipeline(2);
     _ComputePipelinePair pipeline_rasterize_forward = _ComputePipelinePair(7);
+    _ComputePipelinePair pipeline_rasterize_forward_gut = _ComputePipelinePair(10);
     struct _CumsumComputePipeline {
         _ComputePipeline single_pass = _ComputePipeline(2);
         _ComputePipeline block_scan = _ComputePipeline(3);

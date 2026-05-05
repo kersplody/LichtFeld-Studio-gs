@@ -16,6 +16,10 @@
 
 import utils;
 
+#ifndef VKSPLAT_GUT_RASTERIZE
+#define VKSPLAT_GUT_RASTERIZE 0
+#endif
+
 #define SHARED_STRUCT 1
 
 #if SUBTILE_SIZE > 0
@@ -95,7 +99,11 @@ uint32_t computeTileOverlapBitmask(bool exact, float2 g_xy, float4 g_inv_cov_opa
 #if EXPORT_MODE == EXPORT_MODE_VULKAN_FORWARD
 
 #if SHARED_STRUCT
+#if VKSPLAT_GUT_RASTERIZE
+groupshared Splat_3D_GUT_AlphaBlend collected_gut_splats[TILE_SIZE];
+#else
 groupshared Splat_2D_AlphaBlend collected_splats[TILE_SIZE];
+#endif
 #else
 groupshared float2 collected_xy_vs[TILE_SIZE];
 groupshared float4 collected_inv_cov_vs_opacity[TILE_SIZE];
@@ -114,8 +122,17 @@ layout(binding=2) StructuredBuffer<float2> xy_vs;
 layout(binding=3) StructuredBuffer<float4> inv_cov_vs_opacity;
 layout(binding=4) StructuredBuffer<float> rgb;
 
+#if VKSPLAT_GUT_RASTERIZE
+layout(binding=5) StructuredBuffer<float> xyz_ws;
+layout(binding=6) StructuredBuffer<float4> rotations;
+layout(binding=7) StructuredBuffer<float4> scales_opacs;
+
+layout(binding=8) RWStructuredBuffer<float4> final_pixel_state;
+layout(binding=9) RWStructuredBuffer<int32_t> n_contributors;
+#else
 layout(binding=5) RWStructuredBuffer<float4> final_pixel_state;
 layout(binding=6) RWStructuredBuffer<int32_t> n_contributors;
+#endif
 
 [shader("compute")]
 [numthreads(TILE_WIDTH, TILE_HEIGHT, 1)]
@@ -147,6 +164,18 @@ void main(
     bool thread_active = is_inside;
 
     float2 center_pix_coord = pix_coord;
+#if VKSPLAT_GUT_RASTERIZE
+    float3 ray_origin = float3(0.0);
+    float3 ray_direction = float3(0.0, 0.0, 1.0);
+    Camera cam = load_camera(uniforms.world_view_transform,
+        uniforms.fx, uniforms.fy, uniforms.cx, uniforms.cy,
+        base_camera_model(uniforms.camera_model), uniforms.dist_coeffs,
+        H, W);
+    WorldRay ray = pixel_to_world_ray(float2(pix_coord) + 0.5f, cam);
+    ray_origin = ray.origin;
+    ray_direction = ray.direction;
+    thread_active = thread_active && ray.valid;
+#endif
 
     const int shared_memory_rounds = ((tile_idx_end - tile_idx_start + TILE_SIZE - 1) / TILE_SIZE);
 
@@ -179,7 +208,12 @@ void main(
         if (tile_idx_start + splat_pointer_offset < tile_idx_end) {
             uint32_t coll_id = uint32_t(sorted_gauss_idx[tile_idx_start + splat_pointer_offset]);
             #if SHARED_STRUCT
-            collected_splats[thread_rank] = load_splat_alphablend(coll_id, xy_vs, inv_cov_vs_opacity, rgb);
+              #if VKSPLAT_GUT_RASTERIZE
+                collected_gut_splats[thread_rank] =
+                    load_splat_gut_alphablend(coll_id, xyz_ws, rotations, scales_opacs, rgb);
+              #else
+                collected_splats[thread_rank] = load_splat_alphablend(coll_id, xy_vs, inv_cov_vs_opacity, rgb);
+              #endif
             #else
             collected_xy_vs[thread_rank] = read_t2_float2(coll_id, xy_vs);
             collected_inv_cov_vs_opacity[thread_rank] = read_t4_float4(coll_id, inv_cov_vs_opacity);
@@ -191,16 +225,20 @@ void main(
         // check if each splat overlaps with each subtile
         #if SUBTILE_SIZE > 0
         if (thread_rank < min(TILE_SIZE, splats_left_to_process)) {
-            #if SHARED_STRUCT
+            #if VKSPLAT_GUT_RASTERIZE
+                subtile_overlap_bitmasks[thread_rank] = 0xffffffffu;
+            #else
+              #if SHARED_STRUCT
                 Splat_2D_AlphaBlend g = collected_splats[thread_rank];
                 float4 g_inv_cov_opac = g.inv_cov_vs_opacity;
                 float2 g_xy = g.xy_vs;
-            #else
+              #else
                 float4 g_inv_cov_opac = collected_inv_cov_vs_opacity[thread_rank];
                 float2 g_xy = collected_xy_vs[thread_rank];
+              #endif
+                subtile_overlap_bitmasks[thread_rank] =
+                    computeTileOverlapBitmask(false, g_xy - pix_coord_base, g_inv_cov_opac);
             #endif
-            subtile_overlap_bitmasks[thread_rank] =
-                computeTileOverlapBitmask(false, g_xy - pix_coord_base, g_inv_cov_opac);
         }
         GroupMemoryBarrierWithGroupSync();
         #endif
@@ -220,8 +258,14 @@ void main(
 
             #if SHARED_STRUCT
  
-                Splat_2D_AlphaBlend g = collected_splats[j];
-                float4 gauss_rgba = evaluate_splat(g, center_pix_coord);
+                float4 gauss_rgba;
+              #if VKSPLAT_GUT_RASTERIZE
+                    Splat_3D_GUT_AlphaBlend g = collected_gut_splats[j];
+                    gauss_rgba = evaluate_gut_splat(g, ray_origin, ray_direction);
+              #else
+                    Splat_2D_AlphaBlend g = collected_splats[j];
+                    gauss_rgba = evaluate_splat(g, center_pix_coord);
+              #endif
                 if (gauss_rgba.a < ALPHA_THRESHOLD)
                     continue;
 
@@ -288,4 +332,3 @@ void main(
 #endif
 
 #endif
-

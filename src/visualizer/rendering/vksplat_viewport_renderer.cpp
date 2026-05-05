@@ -29,6 +29,9 @@ namespace lfs::vis {
         using lfs::core::Device;
         using lfs::core::Tensor;
 
+        constexpr std::uint32_t kVkSplatProjectionModeShift = 8u;
+        constexpr std::uint32_t kVkSplatProjectionModeGut = 1u;
+
         [[nodiscard]] std::string vkError(const char* const operation, const VkResult result) {
             return std::format("{} failed: {}", operation, vkResultToString(result));
         }
@@ -37,10 +40,12 @@ namespace lfs::vis {
             const std::filesystem::path root{LFS_VKSPLAT_SPV_DIR};
             return {
                 {"projection_forward", (root / "generated/projection_forward.spv").string()},
+                {"projection_forward_gut", (root / "generated/projection_forward_gut.spv").string()},
                 {"generate_keys", (root / "generated/generate_keys.spv").string()},
                 {"compute_tile_ranges", (root / "generated/compute_tile_ranges.spv").string()},
                 {"setup_dispatch_indirect", (root / "generated/setup_dispatch_indirect.spv").string()},
                 {"rasterize_forward", (root / "generated/rasterize_forward.spv").string()},
+                {"rasterize_forward_gut", (root / "generated/rasterize_forward_gut.spv").string()},
                 {"cumsum_single_pass", (root / "generated/cumsum_single_pass.spv").string()},
                 {"cumsum_block_scan", (root / "generated/cumsum_block_scan.spv").string()},
                 {"cumsum_scan_block_sums", (root / "generated/cumsum_scan_block_sums.spv").string()},
@@ -689,7 +694,9 @@ namespace lfs::vis {
         uniforms.grid_height = _CEIL_DIV(uniforms.image_height, TILE_HEIGHT);
         uniforms.num_splats = static_cast<std::uint32_t>(buffers_.num_splats);
         uniforms.active_sh = static_cast<std::uint32_t>(active_sh_degree);
-        uniforms.camera_model = 0;
+        uniforms.camera_model = request.gut
+                                    ? (kVkSplatProjectionModeGut << kVkSplatProjectionModeShift)
+                                    : 0u;
 
         if (request.frame_view.intrinsics_override) {
             const auto& intrinsics = *request.frame_view.intrinsics_override;
@@ -741,13 +748,13 @@ namespace lfs::vis {
         std::expected<void, std::string> compose_status;
         try {
             auto batch = DeviceGuard(&renderer_);
-            renderer_.executeProjectionForward(uniforms, buffers_);
+            renderer_.executeProjectionForward(uniforms, buffers_, 0, request.gut);
             renderer_.executeCalculateIndexBufferOffset(buffers_);
             if (buffers_.num_indices > 0) {
                 renderer_.executeGenerateKeys(uniforms, buffers_);
                 renderer_.executeSort(uniforms, buffers_, -1);
                 renderer_.executeComputeTileRanges(uniforms, buffers_);
-                renderer_.executeRasterizeForward(uniforms, buffers_);
+                renderer_.executeRasterizeForward(uniforms, buffers_, request.gut);
             }
             // Record compose into the rasterizer's batch so the entire frame
             // submits and waits exactly once instead of fence-blocking twice.
