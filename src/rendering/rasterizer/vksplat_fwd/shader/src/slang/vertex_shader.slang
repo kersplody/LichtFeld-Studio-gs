@@ -73,6 +73,46 @@ Splat_2D_Vertex project_gaussian_to_camera(Gaussian_3D g, Camera cam, uint activ
     return { xyz_vs, rgb, cov_vs.xyz, float4(inv_cov_vs, opac), det };
 }
 
+Splat_2D_Vertex project_gaussian_to_camera_model(
+    Gaussian_3D g,
+    Camera cam,
+    uint active_sh,
+    float3 mean_ws,
+    StructuredBuffer<float4> model_transform_rows,
+    uint model_transform_base,
+    bool model_transform_enabled) {
+    float3 xyz_vs = project_point(mean_ws, cam);
+    if (xyz_vs.z <= NEAR_CLIP) {
+        return { float3(0.0), float3(0.0), float3(0.0), float4(0.0), 0.0 };
+    }
+    xyz_vs.xy -= 0.5;  // pixel offset
+
+    float4x3 mat = transpose(cam.world_view_transform);
+    float3 cam_pos = -mul(float3x3(mat), mat[3]);
+    float3 dir = float3(normalize(mean_ws - cam_pos));
+    if (model_transform_enabled) {
+        float3 r0, r1, r2;
+        if (extract_rotation_rows(model_transform_rows, model_transform_base, r0, r1, r2)) {
+            dir = transpose_mul_rows(r0, r1, r2, dir);
+        }
+    }
+    float3 rgb = compute_color_from_sh_coeffs(g.sh_coeffs, dir, active_sh);
+
+    float3x3 cov_ws = get_covariance_from_quat_scales(
+        normalize(g.rotations), g.scales
+    );
+    if (model_transform_enabled) {
+        cov_ws = transform_covariance_rows(model_transform_rows, model_transform_base, cov_ws);
+    }
+    float4 cov_vs = covariance_3d_to_2d(cam, mean_ws, cov_ws);
+
+    float det = compute_det(cov_vs.xyz);
+    float3 inv_cov_vs = compute_inverse(cov_vs.xyz);
+    float opac = g.opacities * cov_vs.w;
+
+    return { xyz_vs, rgb, cov_vs.xyz, float4(inv_cov_vs, opac), det };
+}
+
 [ForceInline]
 float3 rotation_column(float3x3 rotation, uint column) {
     if (column == 0u)
@@ -89,8 +129,15 @@ bool valid_gut_image_point(float3 projected, Camera cam) {
            image_point_in_image_bounds_margin(projected.xy, cam, 0.1f);
 }
 
-Splat_2D_Vertex project_gaussian_to_camera_gut(Gaussian_3D g, Camera cam, uint active_sh) {
-    float3 mean_vs = project_point(g.xyz_ws, cam);
+Splat_2D_Vertex project_gaussian_to_camera_gut(
+    Gaussian_3D g,
+    Camera cam,
+    uint active_sh,
+    float3 mean_ws,
+    StructuredBuffer<float4> model_transform_rows,
+    uint model_transform_base,
+    bool model_transform_enabled) {
+    float3 mean_vs = project_point(mean_ws, cam);
     if (mean_vs.z <= NEAR_CLIP || !isfinite(dot(mean_vs, mean_vs))) {
         return { float3(0.0), float3(0.0), float3(0.0), float4(0.0), 0.0 };
     }
@@ -110,12 +157,18 @@ Splat_2D_Vertex project_gaussian_to_camera_gut(Gaussian_3D g, Camera cam, uint a
     // is evaluated against the pixel ray in the raster shader.
     float3x3 rotation = quat_to_rotmat(normalize(g.rotations));
     float3 sigma_points[NUM_SIGMA_POINTS];
-    sigma_points[0] = g.xyz_ws;
+    sigma_points[0] = mean_ws;
     for (uint i = 0u; i < D; ++i) {
         float scale_i = i == 0u ? g.scales.x : (i == 1u ? g.scales.y : g.scales.z);
         float3 delta = sigma_scale * scale_i * rotation_column(rotation, i);
-        sigma_points[1u + i] = g.xyz_ws + delta;
-        sigma_points[1u + D + i] = g.xyz_ws - delta;
+        float3 source_plus = g.xyz_ws + delta;
+        float3 source_minus = g.xyz_ws - delta;
+        sigma_points[1u + i] = model_transform_enabled
+                                    ? transform_point_rows(model_transform_rows, model_transform_base, source_plus)
+                                    : source_plus;
+        sigma_points[1u + D + i] = model_transform_enabled
+                                        ? transform_point_rows(model_transform_rows, model_transform_base, source_minus)
+                                        : source_minus;
     }
 
     float2 image_points[NUM_SIGMA_POINTS];
@@ -145,7 +198,13 @@ Splat_2D_Vertex project_gaussian_to_camera_gut(Gaussian_3D g, Camera cam, uint a
 
     float4x3 mat = transpose(cam.world_view_transform);
     float3 cam_pos = -mul(float3x3(mat), mat[3]);
-    float3 dir = float3(normalize(g.xyz_ws - cam_pos));
+    float3 dir = float3(normalize(mean_ws - cam_pos));
+    if (model_transform_enabled) {
+        float3 r0, r1, r2;
+        if (extract_rotation_rows(model_transform_rows, model_transform_base, r0, r1, r2)) {
+            dir = transpose_mul_rows(r0, r1, r2, dir);
+        }
+    }
     float3 rgb = compute_color_from_sh_coeffs(g.sh_coeffs, dir, active_sh);
     float3 inv_cov_vs = compute_inverse(cov_vs.xyz);
     float opac = g.opacities * cov_vs.w;
@@ -198,6 +257,11 @@ layout(binding=7) RWStructuredBuffer<float2> out_xy_vs;
 layout(binding=8) RWStructuredBuffer<float> out_depths;
 layout(binding=9) RWStructuredBuffer<float4> out_inv_cov_vs;
 layout(binding=10) RWStructuredBuffer<float> out_rgb;
+layout(binding=11) RWStructuredBuffer<uint> out_overlay_flags;
+layout(binding=12) ByteAddressBuffer transform_indices;
+layout(binding=13) ByteAddressBuffer node_mask;
+layout(binding=14) StructuredBuffer<float4> overlay_params;
+layout(binding=15) StructuredBuffer<float4> model_transforms;
 
 #elif EXPORT_MODE == EXPORT_MODE_VULKAN_BACKWARD
 
@@ -236,7 +300,7 @@ void main(
     uniform Uniforms uniforms
 ) {
     const uint active_sh = uniforms.active_sh;
-    const uint step = uniforms.step;
+    const uint model_transform_count = uniforms.step;
     const uint image_height = uniforms.image_height;
     const uint image_width = uniforms.image_width;
     const uint grid_height = uniforms.grid_height;
@@ -288,13 +352,130 @@ void main(
         active_sh
       );
 
+#if EXPORT_MODE == EXPORT_MODE_VULKAN_FORWARD
+    uint overlay_flags = 0;
+    bool active = true;
+    float4 emphasis_flags = overlay_params[OVERLAY_PARAM_EMPHASIS_FLAGS];
+    bool node_data_enabled = overlay_enabled(emphasis_flags.y);
+    int node_count = overlay_int(emphasis_flags.z);
+    int node_idx = node_data_enabled ? read_int32(transform_indices, g_idx) : -1;
+    int model_transform_idx = node_data_enabled ? node_idx : 0;
+    model_transform_idx = clamp(model_transform_idx, 0, int(max(model_transform_count, 1u)) - 1);
+    uint model_transform_base = uint(model_transform_idx) * 4u;
+    bool model_transform_enabled = model_transform_count > 0u;
+    float3 mean_ws = model_transform_enabled
+                         ? transform_point_rows(model_transforms, model_transform_base, gauss.xyz_ws)
+                         : gauss.xyz_ws;
+
+    float4 crop_flags = overlay_params[OVERLAY_PARAM_CROP_FLAGS];
+    if (overlay_enabled(crop_flags.x)) {
+        int parent_node_idx = overlay_int(crop_flags.w);
+        bool applies = parent_node_idx < 0 || (node_data_enabled && node_idx == parent_node_idx);
+        if (applies) {
+            float3 local = transform_point_rows(overlay_params, OVERLAY_PARAM_CROP_TRANSFORM, mean_ws);
+            float3 bmin = overlay_params[OVERLAY_PARAM_CROP_MIN].xyz;
+            float3 bmax = overlay_params[OVERLAY_PARAM_CROP_MAX].xyz;
+            bool inside = local.x >= bmin.x && local.x <= bmax.x &&
+                          local.y >= bmin.y && local.y <= bmax.y &&
+                          local.z >= bmin.z && local.z <= bmax.z;
+            bool outside = inside == overlay_enabled(crop_flags.y);
+            if (outside) {
+                overlay_flags |= OVERLAY_FLAG_NONSELECTABLE;
+                if (overlay_enabled(crop_flags.z)) {
+                    overlay_flags |= OVERLAY_FLAG_DIM;
+                } else {
+                    active = false;
+                }
+            }
+        }
+    }
+
+    float4 ellipsoid_flags = overlay_params[OVERLAY_PARAM_ELLIPSOID_FLAGS];
+    if (active && overlay_enabled(ellipsoid_flags.x)) {
+        int parent_node_idx = overlay_int(ellipsoid_flags.w);
+        bool applies = parent_node_idx < 0 || (node_data_enabled && node_idx == parent_node_idx);
+        if (applies) {
+            float3 local = transform_point_rows(overlay_params, OVERLAY_PARAM_ELLIPSOID_TRANSFORM, mean_ws);
+            float3 radii = overlay_params[OVERLAY_PARAM_ELLIPSOID_RADII].xyz;
+            float norm = (local.x * local.x) / (radii.x * radii.x) +
+                         (local.y * local.y) / (radii.y * radii.y) +
+                         (local.z * local.z) / (radii.z * radii.z);
+            bool inside = norm <= 1.0f;
+            bool outside = inside == overlay_enabled(ellipsoid_flags.y);
+            if (outside) {
+                overlay_flags |= OVERLAY_FLAG_NONSELECTABLE;
+                if (overlay_enabled(ellipsoid_flags.z)) {
+                    overlay_flags |= OVERLAY_FLAG_DIM;
+                } else {
+                    active = false;
+                }
+            }
+        }
+    }
+
+    float4 view_flags = overlay_params[OVERLAY_PARAM_VIEW_FLAGS];
+    if (active && overlay_enabled(view_flags.x)) {
+        float3 local = transform_point_rows(overlay_params, OVERLAY_PARAM_VIEW_TRANSFORM, mean_ws);
+        float3 vmin = overlay_params[OVERLAY_PARAM_VIEW_MIN].xyz;
+        float3 vmax = overlay_params[OVERLAY_PARAM_VIEW_MAX].xyz;
+        bool inside = local.x >= vmin.x && local.x <= vmax.x &&
+                      local.y >= vmin.y && local.y <= vmax.y &&
+                      local.z >= vmin.z && local.z <= vmax.z;
+        if (!inside) {
+            overlay_flags |= OVERLAY_FLAG_NONSELECTABLE;
+            if (overlay_enabled(view_flags.y)) {
+                active = false;
+            }
+        }
+    }
+
+    if (active && overlay_enabled(emphasis_flags.x) && node_data_enabled && node_idx >= 0 && node_idx < node_count) {
+        if (read_byte(node_mask, uint(node_idx)) == 0) {
+            overlay_flags |= (OVERLAY_FLAG_DIM | OVERLAY_FLAG_NONSELECTABLE);
+        }
+    }
+
+    if (active && emphasis_flags.w > 0.0f && node_data_enabled && node_idx >= 0 && node_idx < node_count) {
+        if (read_byte(node_mask, uint(node_idx)) != 0) {
+            overlay_flags |= OVERLAY_FLAG_FLASH;
+        }
+    }
+
+    if (!active) {
+        out_overlay_flags[g_idx] = overlay_flags;
+        out_radii[g_idx] = 0;
+        out_tiles_touched[g_idx] = 0;
+      #if USE_EMULATED_INT64
+        out_rect_tile_space[2*g_idx+0] = 0;
+        out_rect_tile_space[2*g_idx+1] = 0;
+      #else
+        out_rect_tile_space[g_idx] = int64_t(0);
+      #endif
+        return;
+    }
+#endif
+
     // projection (differentiable)
   #if EXPORT_MODE != EXPORT_MODE_VULKAN_BACKWARD
     // forward
   #if VKSPLAT_GUT_PROJECTION
-    Splat_2D_Vertex splat = project_gaussian_to_camera_gut(gauss, cam, active_sh);
+    Splat_2D_Vertex splat = project_gaussian_to_camera_gut(
+        gauss,
+        cam,
+        active_sh,
+        mean_ws,
+        model_transforms,
+        model_transform_base,
+        model_transform_enabled);
   #else
-    Splat_2D_Vertex splat = project_gaussian_to_camera(gauss, cam, active_sh);
+    Splat_2D_Vertex splat = project_gaussian_to_camera_model(
+        gauss,
+        cam,
+        active_sh,
+        mean_ws,
+        model_transforms,
+        model_transform_base,
+        model_transform_enabled);
   #endif
   #else
     // backward
@@ -325,6 +506,7 @@ void main(
         splat.det <= 0.0
     ) {
         #if EXPORT_MODE == EXPORT_MODE_VULKAN_FORWARD
+            out_overlay_flags[g_idx] = overlay_flags;
             out_radii[g_idx] = 0;
             out_tiles_touched[g_idx] = 0;
           #if USE_EMULATED_INT64
@@ -354,6 +536,7 @@ void main(
     int32_t n_tiles = int32_t(rect_tile_space.max_x - rect_tile_space.min_x) * int32_t(rect_tile_space.max_y - rect_tile_space.min_y);
     if (n_tiles == 0) {
         #if EXPORT_MODE == EXPORT_MODE_VULKAN_FORWARD
+            out_overlay_flags[g_idx] = overlay_flags;
             out_radii[g_idx] = 0;
             out_tiles_touched[g_idx] = 0;
           #if USE_EMULATED_INT64
@@ -383,8 +566,10 @@ void main(
     out_rect_tile_space[g_idx] = reinterpret<int64_t>(rect_tile_space);
   #endif
 
-    if (n_tiles == 0)
+    if (n_tiles == 0) {
+        out_overlay_flags[g_idx] = overlay_flags;
         return;
+    }
 
 #endif  // EXPORT_MODE != EXPORT_MODE_VULKAN_BACKWARD
 
@@ -394,6 +579,7 @@ void main(
     out_depths[g_idx] = splat.xyz_vs.z;
     out_inv_cov_vs[g_idx] = splat.inv_cov_vs_opac;
     write_t3_float3(splat.rgb, g_idx, out_rgb);
+    out_overlay_flags[g_idx] = overlay_flags;
 
 #elif EXPORT_MODE == EXPORT_MODE_VULKAN_BACKWARD
 

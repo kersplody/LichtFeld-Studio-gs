@@ -107,6 +107,7 @@ void VulkanGSRenderer::initializeExternal(const std::map<std::string, std::strin
 
     createComputePipeline(pipeline_projection_forward, spirv_paths.at("projection_forward"));
     createComputePipeline(pipeline_projection_forward_gut, spirv_paths.at("projection_forward_gut"));
+    createComputePipeline(pipeline_selection_mask, spirv_paths.at("selection_mask"));
     createComputePipeline(pipeline_generate_keys, spirv_paths.at("generate_keys"));
     for (int i = 0; i < 2; ++i) {
         createComputePipeline(pipeline_compute_tile_ranges[i], spirv_paths.at("compute_tile_ranges"));
@@ -130,6 +131,10 @@ void VulkanGSRenderer::initializeExternal(const std::map<std::string, std::strin
 void VulkanGSRenderer::executeProjectionForward(
     const VulkanGSRendererUniforms& uniforms,
     VulkanGSPipelineBuffers& buffers,
+    const _VulkanBuffer& transform_indices,
+    const _VulkanBuffer& node_mask,
+    const _VulkanBuffer& overlay_params,
+    const _VulkanBuffer& model_transforms,
     size_t alloc_reserve,
     bool use_gut_projection) {
     PerfTimer::Timer<PerfTimer::ProjectionForward> timer(this);
@@ -142,6 +147,10 @@ void VulkanGSRenderer::executeProjectionForward(
                             {buffers.sh_coeffs.deviceBuffer, TRANSFER_COMPUTE_SHADER_WRITE},
                             {buffers.rotations.deviceBuffer, TRANSFER_COMPUTE_SHADER_WRITE},
                             {buffers.scales_opacs.deviceBuffer, TRANSFER_COMPUTE_SHADER_WRITE},
+                            {transform_indices, TRANSFER_COMPUTE_SHADER_WRITE},
+                            {node_mask, TRANSFER_COMPUTE_SHADER_WRITE},
+                            {overlay_params, TRANSFER_COMPUTE_SHADER_WRITE},
+                            {model_transforms, TRANSFER_COMPUTE_SHADER_WRITE},
                         },
                         COMPUTE_SHADER_READ);
 
@@ -164,6 +173,11 @@ void VulkanGSRenderer::executeProjectionForward(
             resizeDeviceBuffer(buffers.depths, alloc_size),
             resizeDeviceBuffer(buffers.inv_cov_vs_opacity, 4 * alloc_size),
             resizeDeviceBuffer(buffers.rgb, 3 * alloc_size),
+            resizeDeviceBuffer(buffers.overlay_flags, alloc_size),
+            transform_indices,
+            node_mask,
+            overlay_params,
+            model_transforms,
         });
 }
 
@@ -243,6 +257,13 @@ void VulkanGSRenderer::executeComputeTileRanges(
 void VulkanGSRenderer::executeRasterizeForward(
     const VulkanGSRendererUniforms& uniforms,
     VulkanGSPipelineBuffers& buffers,
+    const _VulkanBuffer& selection_mask,
+    const _VulkanBuffer& preview_mask,
+    const _VulkanBuffer& selection_colors,
+    const _VulkanBuffer& overlay_flags,
+    const _VulkanBuffer& overlay_params,
+    const _VulkanBuffer& transform_indices,
+    const _VulkanBuffer& model_transforms,
     bool use_gut_rasterization) {
     if (buffers.num_indices == 0)
         return;
@@ -256,6 +277,13 @@ void VulkanGSRenderer::executeRasterizeForward(
                             {buffers.sorted_gauss_idx().deviceBuffer, COMPUTE_SHADER_WRITE},
                             {buffers.tile_ranges.deviceBuffer, COMPUTE_SHADER_WRITE},
                             {buffers.rgb.deviceBuffer, COMPUTE_SHADER_WRITE},
+                            {selection_mask, TRANSFER_COMPUTE_SHADER_WRITE},
+                            {preview_mask, TRANSFER_COMPUTE_SHADER_WRITE},
+                            {selection_colors, TRANSFER_COMPUTE_SHADER_WRITE},
+                            {overlay_flags, COMPUTE_SHADER_WRITE},
+                            {overlay_params, TRANSFER_COMPUTE_SHADER_WRITE},
+                            {transform_indices, TRANSFER_COMPUTE_SHADER_WRITE},
+                            {model_transforms, TRANSFER_COMPUTE_SHADER_WRITE},
                         },
                         COMPUTE_SHADER_READ);
 
@@ -277,6 +305,14 @@ void VulkanGSRenderer::executeRasterizeForward(
                 // outputs
                 resizeDeviceBuffer(buffers.pixel_state, 4 * num_pixels),
                 resizeDeviceBuffer(buffers.n_contributors, num_pixels),
+                // selection overlay inputs
+                selection_mask,
+                preview_mask,
+                selection_colors,
+                overlay_flags,
+                overlay_params,
+                transform_indices,
+                model_transforms,
             }));
     } else {
         executeCompute(
@@ -293,8 +329,55 @@ void VulkanGSRenderer::executeRasterizeForward(
                 // outputs
                 resizeDeviceBuffer(buffers.pixel_state, 4 * num_pixels),
                 resizeDeviceBuffer(buffers.n_contributors, num_pixels),
+                // selection overlay inputs
+                selection_mask,
+                preview_mask,
+                selection_colors,
+                overlay_flags,
+                overlay_params,
             }));
     }
+}
+
+void VulkanGSRenderer::executeSelectionMask(
+    const VulkanGSSelectionMaskUniforms& uniforms,
+    VulkanGSPipelineBuffers& buffers,
+    const _VulkanBuffer& transform_indices,
+    const _VulkanBuffer& node_mask,
+    const _VulkanBuffer& primitives,
+    const _VulkanBuffer& model_transforms,
+    const _VulkanBuffer& selection_out) {
+    DEVICE_GUARD;
+
+    bufferMemoryBarrier({
+                            {buffers.xyz_ws.deviceBuffer, TRANSFER_COMPUTE_SHADER_WRITE},
+                            {buffers.rotations.deviceBuffer, TRANSFER_COMPUTE_SHADER_WRITE},
+                            {buffers.scales_opacs.deviceBuffer, TRANSFER_COMPUTE_SHADER_WRITE},
+                            {transform_indices, TRANSFER_COMPUTE_SHADER_WRITE},
+                            {node_mask, TRANSFER_COMPUTE_SHADER_WRITE},
+                            {primitives, TRANSFER_COMPUTE_SHADER_WRITE},
+                            {model_transforms, TRANSFER_COMPUTE_SHADER_WRITE},
+                            {selection_out, TRANSFER_COMPUTE_SHADER_WRITE},
+                        },
+                        COMPUTE_SHADER_READ_WRITE);
+
+    const size_t num_words = _CEIL_DIV(static_cast<size_t>(uniforms.num_splats), 4);
+    executeCompute(
+        {{num_words, SUBGROUP_SIZE}},
+        &uniforms, sizeof(uniforms),
+        pipeline_selection_mask,
+        {
+            buffers.xyz_ws.deviceBuffer,
+            transform_indices,
+            node_mask,
+            primitives,
+            model_transforms,
+            buffers.rotations.deviceBuffer,
+            buffers.scales_opacs.deviceBuffer,
+            selection_out,
+        });
+
+    bufferMemoryBarrier({{selection_out, COMPUTE_SHADER_WRITE}}, TRANSFER_READ);
 }
 
 void VulkanGSRenderer::executeCumsum(

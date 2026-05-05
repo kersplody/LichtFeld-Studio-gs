@@ -869,3 +869,109 @@ struct Uniforms {
     float4 dist_coeffs;
     float4x4 world_view_transform;
 }
+
+static const uint OVERLAY_FLAG_DIM = 1;
+static const uint OVERLAY_FLAG_NONSELECTABLE = 2;
+static const uint OVERLAY_FLAG_FLASH = 4;
+
+static const uint OVERLAY_PARAM_CROP_FLAGS = 0;
+static const uint OVERLAY_PARAM_CROP_MIN = 1;
+static const uint OVERLAY_PARAM_CROP_MAX = 2;
+static const uint OVERLAY_PARAM_CROP_TRANSFORM = 3;
+static const uint OVERLAY_PARAM_ELLIPSOID_FLAGS = 7;
+static const uint OVERLAY_PARAM_ELLIPSOID_RADII = 8;
+static const uint OVERLAY_PARAM_ELLIPSOID_TRANSFORM = 9;
+static const uint OVERLAY_PARAM_VIEW_FLAGS = 13;
+static const uint OVERLAY_PARAM_VIEW_MIN = 14;
+static const uint OVERLAY_PARAM_VIEW_MAX = 15;
+static const uint OVERLAY_PARAM_VIEW_TRANSFORM = 16;
+static const uint OVERLAY_PARAM_EMPHASIS_FLAGS = 20;
+static const uint OVERLAY_PARAM_CURSOR_FLAGS = 21;
+static const uint OVERLAY_PARAM_MARKER_FLAGS = 22;
+static const uint OVERLAY_PARAM_SELECTION_CURSOR = 23;
+static const uint OVERLAY_PARAM_SELECTION_FLAGS = 24;
+static const uint OVERLAY_PARAM_COUNT = 25;
+
+[ForceInline]
+bool overlay_enabled(float value)
+{
+    return value > 0.5f;
+}
+
+[ForceInline]
+int overlay_int(float value)
+{
+    return int(round(value));
+}
+
+[ForceInline]
+uint read_byte(ByteAddressBuffer buffer, uint idx)
+{
+    uint aligned_idx = idx & ~3u;
+    uint shift = (idx & 3u) * 8u;
+    return (buffer.Load(aligned_idx) >> shift) & 0xffu;
+}
+
+[ForceInline]
+int read_int32(ByteAddressBuffer buffer, uint idx)
+{
+    return int(buffer.Load(idx * 4u));
+}
+
+[ForceInline]
+float3 transform_point_rows(StructuredBuffer<float4> params, uint base_idx, float3 p)
+{
+    float4 r0 = params[base_idx + 0];
+    float4 r1 = params[base_idx + 1];
+    float4 r2 = params[base_idx + 2];
+    return float3(dot(r0.xyz, p) + r0.w,
+                  dot(r1.xyz, p) + r1.w,
+                  dot(r2.xyz, p) + r2.w);
+}
+
+[ForceInline]
+float3x3 linear_transform_rows(StructuredBuffer<float4> params, uint base_idx)
+{
+    float4 r0 = params[base_idx + 0];
+    float4 r1 = params[base_idx + 1];
+    float4 r2 = params[base_idx + 2];
+    return float3x3(r0.x, r0.y, r0.z,
+                    r1.x, r1.y, r1.z,
+                    r2.x, r2.y, r2.z);
+}
+
+[ForceInline]
+float3x3 transform_covariance_rows(StructuredBuffer<float4> params, uint base_idx, float3x3 cov)
+{
+    float3x3 m = linear_transform_rows(params, base_idx);
+    return mul(m, mul(cov, transpose(m)));
+}
+
+[ForceInline]
+bool extract_rotation_rows(StructuredBuffer<float4> params, uint base_idx, out float3 row0, out float3 row1, out float3 row2)
+{
+    row0 = float3(1.0f, 0.0f, 0.0f);
+    row1 = float3(0.0f, 1.0f, 0.0f);
+    row2 = float3(0.0f, 0.0f, 1.0f);
+    float4 m0 = params[base_idx + 0];
+    float4 m1 = params[base_idx + 1];
+    float4 m2 = params[base_idx + 2];
+    float scale_x = length(float3(m0.x, m1.x, m2.x));
+    float scale_y = length(float3(m0.y, m1.y, m2.y));
+    float scale_z = length(float3(m0.z, m1.z, m2.z));
+    if (scale_x <= 1.0e-8f || scale_y <= 1.0e-8f || scale_z <= 1.0e-8f)
+        return false;
+
+    row0 = float3(m0.x / scale_x, m0.y / scale_y, m0.z / scale_z);
+    row1 = float3(m1.x / scale_x, m1.y / scale_y, m1.z / scale_z);
+    row2 = float3(m2.x / scale_x, m2.y / scale_y, m2.z / scale_z);
+    return true;
+}
+
+[ForceInline]
+float3 transpose_mul_rows(float3 row0, float3 row1, float3 row2, float3 v)
+{
+    return float3(row0.x * v.x + row1.x * v.y + row2.x * v.z,
+                  row0.y * v.x + row1.y * v.y + row2.y * v.z,
+                  row0.z * v.x + row1.z * v.y + row2.z * v.z);
+}
