@@ -11,6 +11,7 @@
 #include "rendering/coordinate_conventions.hpp"
 #include "rendering/gs_rasterizer_tensor.hpp"
 #include "rendering/image_layout.hpp"
+#include "rendering/render_constants.hpp"
 #include "training/dataset.hpp"
 #include "visualizer/ipc/view_context.hpp"
 #include "visualizer/visualizer.hpp"
@@ -381,6 +382,25 @@ namespace lfs::python {
 
     void PyRenderSettings::set(const std::string& name, nb::object value) {
         prop_.setattr(name, value);
+        if (name == "raster_backend") {
+            settings_.gut = rendering::isGutBackend(
+                static_cast<rendering::GaussianRasterBackend>(settings_.raster_backend));
+        } else if (name == "gut") {
+            const auto backend = static_cast<rendering::GaussianRasterBackend>(settings_.raster_backend);
+            if (settings_.gut) {
+                if (backend == rendering::GaussianRasterBackend::FastGs) {
+                    settings_.raster_backend = static_cast<int>(rendering::GaussianRasterBackend::Gut);
+                } else if (backend == rendering::GaussianRasterBackend::VkSplat) {
+                    settings_.raster_backend = static_cast<int>(rendering::GaussianRasterBackend::VkSplatGut);
+                }
+            } else {
+                if (backend == rendering::GaussianRasterBackend::Gut) {
+                    settings_.raster_backend = static_cast<int>(rendering::GaussianRasterBackend::FastGs);
+                } else if (backend == rendering::GaussianRasterBackend::VkSplatGut) {
+                    settings_.raster_backend = static_cast<int>(rendering::GaussianRasterBackend::VkSplat);
+                }
+            }
+        }
         vis::update_render_settings(settings_);
         request_redraw();
     }
