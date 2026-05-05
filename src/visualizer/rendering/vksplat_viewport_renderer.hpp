@@ -83,7 +83,8 @@ namespace lfs::vis {
             VulkanContext& context,
             VkCommandBuffer cmd,
             const VulkanGSRendererUniforms& uniforms,
-            const glm::vec3& background);
+            const glm::vec3& background,
+            bool transparent_background);
 
         // One coalesced CUDA-imported VkBuffer per ring slot, holding all four
         // input regions (xyz | rotations | scales+opacs | sh) packed back-to-back

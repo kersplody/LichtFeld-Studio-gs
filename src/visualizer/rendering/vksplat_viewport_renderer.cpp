@@ -114,7 +114,7 @@ namespace lfs::vis {
         struct ComposePushConstants {
             std::uint32_t width = 0;
             std::uint32_t height = 0;
-            std::uint32_t pad0 = 0;
+            std::uint32_t transparent_background = 0;
             std::uint32_t pad1 = 0;
             glm::vec4 background{0.0f, 0.0f, 0.0f, 1.0f};
         };
@@ -538,7 +538,8 @@ namespace lfs::vis {
         VulkanContext& context,
         VkCommandBuffer cmd,
         const VulkanGSRendererUniforms& uniforms,
-        const glm::vec3& background) {
+        const glm::vec3& background,
+        const bool transparent_background) {
         if (auto ok = ensureComposePipeline(context); !ok) {
             return ok;
         }
@@ -619,6 +620,7 @@ namespace lfs::vis {
         ComposePushConstants push{
             .width = uniforms.image_width,
             .height = uniforms.image_height,
+            .transparent_background = transparent_background ? 1u : 0u,
             .background = glm::vec4(background, 1.0f),
         };
         vkCmdPushConstants(cmd,
@@ -750,7 +752,11 @@ namespace lfs::vis {
             // Record compose into the rasterizer's batch so the entire frame
             // submits and waits exactly once instead of fence-blocking twice.
             compose_status = composePixelState(
-                context, renderer_.activeCommandBuffer(), uniforms, request.frame_view.background_color);
+                context,
+                renderer_.activeCommandBuffer(),
+                uniforms,
+                request.frame_view.background_color,
+                request.transparent_background);
         } catch (const std::exception& e) {
             return std::unexpected(std::format("VkSplat forward pass failed: {}", e.what()));
         }
