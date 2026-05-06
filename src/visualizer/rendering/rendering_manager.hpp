@@ -6,6 +6,7 @@
 
 #include "camera_interaction_service.hpp"
 #include "core/export.hpp"
+#include "core/tensor.hpp"
 #include "dirty_flags.hpp"
 #include "framerate_controller.hpp"
 #include "internal/viewport.hpp"
@@ -54,6 +55,7 @@ namespace lfs::core::events::cmd {
 namespace lfs::vis {
     class VulkanContext;
     class VksplatViewportRenderer;
+    class PointCloudVulkanRenderer;
 
     class SceneManager;
     class TrainerManager;
@@ -456,6 +458,13 @@ namespace lfs::vis {
         std::shared_ptr<const lfs::core::Tensor> vulkan_viewport_image_;
         std::uint64_t vulkan_viewport_image_generation_ = 0;
         std::unique_ptr<VksplatViewportRenderer> vksplat_viewport_renderer_;
+        std::unique_ptr<PointCloudVulkanRenderer> point_cloud_vulkan_renderer_;
+        // Cached SH0→RGB derivation for the point-cloud Vulkan path. Refreshed
+        // only when the source sh0_raw() pointer/size changes so the Vulkan
+        // renderer's per-tensor upload cache stays warm across frames.
+        lfs::core::Tensor point_cloud_colors_cache_;
+        const void* point_cloud_colors_cache_key_ = nullptr;
+        std::size_t point_cloud_colors_cache_size_ = 0;
         VulkanContext* last_vulkan_context_ = nullptr;
         VkImage vulkan_external_viewport_image_ = VK_NULL_HANDLE;
         VkImageView vulkan_external_viewport_image_view_ = VK_NULL_HANDLE;

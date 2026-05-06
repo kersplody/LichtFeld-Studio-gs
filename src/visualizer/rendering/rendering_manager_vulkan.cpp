@@ -6,6 +6,7 @@
 #include "core/splat_data.hpp"
 #include "core/tensor.hpp"
 #include "model_renderability.hpp"
+#include "point_cloud_vulkan_renderer.hpp"
 #include "rendering/image_layout.hpp"
 #include "rendering/rasterizer/rasterization/include/rasterization_config.h"
 #include "rendering_manager.hpp"
@@ -1115,21 +1116,182 @@ namespace lfs::vis {
             // Split-view paths populate pending_split_view directly; skip the
             // full-viewport fallback that would set rendered_image to a wrong-
             // sized tensor and squash the left panel through the scene interop.
-        } else if (render_point_cloud && has_renderable_model) {
-            LOG_TIMER("renderVulkanFrame.renderPointCloudImage(splat)");
-            auto request = buildPointCloudRenderRequest(frame_ctx, render_size, frame_ctx.scene_state.model_transforms);
-            auto render_result = engine_->renderPointCloudImage(*model, request);
-            if (render_result) {
-                rendered_image = std::move(render_result->image);
-                rendered_metadata = std::move(render_result->metadata);
-            } else {
-                render_error = render_result.error();
+        } else if (render_point_cloud && (has_renderable_model || has_point_cloud)) {
+            // Brush edits mutate sh0 in place — same tensor pointer but new
+            // contents. Invalidate the derived-colors cache so the next frame
+            // re-derives + re-uploads.
+            if ((frame_dirty & DirtyFlag::SPLATS) != 0) {
+                point_cloud_colors_cache_key_ = nullptr;
+                point_cloud_colors_cache_size_ = 0;
+                point_cloud_colors_cache_ = lfs::core::Tensor{};
             }
-        } else if (render_point_cloud && has_point_cloud) {
-            LOG_TIMER("renderVulkanFrame.renderPointCloudImage(pc)");
-            const std::vector<glm::mat4> point_cloud_transforms = {frame_ctx.scene_state.point_cloud_transform};
-            auto request = buildPointCloudRenderRequest(frame_ctx, render_size, point_cloud_transforms);
-            auto render_result = engine_->renderPointCloudImage(*frame_ctx.scene_state.point_cloud, request);
+            std::vector<glm::mat4> point_cloud_transforms_storage;
+            const std::vector<glm::mat4>* transforms_for_request = nullptr;
+            if (has_renderable_model) {
+                transforms_for_request = &frame_ctx.scene_state.model_transforms;
+            } else {
+                point_cloud_transforms_storage = {frame_ctx.scene_state.point_cloud_transform};
+                transforms_for_request = &point_cloud_transforms_storage;
+            }
+            auto pc_request = buildPointCloudRenderRequest(
+                frame_ctx, render_size, *transforms_for_request);
+
+            // Vulkan-native path: skip CUDA staging, drive an external VkImage
+            // straight through the same plumbing the VkSplat backend uses.
+            auto try_vulkan = [&]() -> std::optional<VulkanFrameResult> {
+                if (!context.vulkan_context) {
+                    return std::nullopt;
+                }
+                if (!point_cloud_vulkan_renderer_) {
+                    point_cloud_vulkan_renderer_ = std::make_unique<PointCloudVulkanRenderer>();
+                }
+
+                lfs::core::Tensor splat_positions;
+                const lfs::core::Tensor* positions_ptr = nullptr;
+                const lfs::core::Tensor* colors_ptr = nullptr;
+                if (has_renderable_model) {
+                    constexpr float SH_C0 = 0.28209479177387814f;
+                    const auto& sh0 = model->sh0_raw();
+                    const void* sh0_key = sh0.is_valid() ? sh0.ptr<float>() : nullptr;
+                    const std::size_t sh0_count =
+                        sh0.is_valid() ? static_cast<std::size_t>(sh0.size(0)) : 0;
+                    if (sh0_key != point_cloud_colors_cache_key_ ||
+                        sh0_count != point_cloud_colors_cache_size_ ||
+                        !point_cloud_colors_cache_.is_valid()) {
+                        try {
+                            point_cloud_colors_cache_ =
+                                (sh0.slice(1, 0, 1).squeeze(1) * SH_C0 + 0.5f).clamp(0.0f, 1.0f);
+                        } catch (const std::exception& e) {
+                            LOG_ERROR("Point cloud color derivation failed: {}", e.what());
+                            return std::nullopt;
+                        }
+                        point_cloud_colors_cache_key_ = sh0_key;
+                        point_cloud_colors_cache_size_ = sh0_count;
+                    }
+                    splat_positions = model->get_means();
+                    positions_ptr = &splat_positions;
+                    colors_ptr = &point_cloud_colors_cache_;
+                } else {
+                    positions_ptr = &frame_ctx.scene_state.point_cloud->means;
+                    colors_ptr = &frame_ctx.scene_state.point_cloud->colors;
+                }
+
+                const auto vp_data = frame_ctx.makeViewportData();
+                const glm::mat4 view = vp_data.getViewMatrix();
+                const glm::mat4 projection = lfs::rendering::createProjectionMatrix(
+                    pc_request.frame_view.size,
+                    lfs::rendering::focalLengthToVFov(pc_request.frame_view.focal_length_mm),
+                    pc_request.frame_view.orthographic,
+                    pc_request.frame_view.ortho_scale,
+                    pc_request.frame_view.near_plane,
+                    pc_request.frame_view.far_plane);
+                // glm::perspective/ortho emit OpenGL-NDC (Y up); Vulkan NDC has
+                // Y down. Apply the same clip-space flip the mesh pass does so
+                // the rendered image isn't upside-down vs. the screen quad's
+                // top-left UV origin.
+                glm::mat4 clip_y_flip(1.0f);
+                clip_y_flip[1][1] = -1.0f;
+                const glm::mat4 view_proj = clip_y_flip * projection * view;
+                const float focal_y = lfs::core::fov2focal(
+                    lfs::rendering::focalLengthToVFovRad(pc_request.frame_view.focal_length_mm),
+                    pc_request.frame_view.size.y);
+
+                PointCloudVulkanRenderer::RenderRequest vk_req{};
+                vk_req.positions = positions_ptr;
+                vk_req.colors = colors_ptr;
+                vk_req.model_transforms = pc_request.scene.model_transforms;
+                vk_req.transform_indices = pc_request.scene.transform_indices.get();
+                vk_req.node_visibility_mask = &pc_request.scene.node_visibility_mask;
+                if (pc_request.filters.crop_box.has_value()) {
+                    PointCloudVulkanRenderer::CropBox crop{};
+                    crop.to_local = pc_request.filters.crop_box->transform;
+                    crop.min = pc_request.filters.crop_box->min;
+                    crop.max = pc_request.filters.crop_box->max;
+                    crop.inverse = pc_request.filters.crop_inverse;
+                    crop.desaturate = pc_request.filters.crop_desaturate;
+                    vk_req.crop = crop;
+                }
+                vk_req.view = view;
+                vk_req.view_projection = view_proj;
+                vk_req.size = pc_request.frame_view.size;
+                vk_req.background_color = pc_request.frame_view.background_color;
+                vk_req.transparent_background = pc_request.transparent_background;
+                vk_req.orthographic = pc_request.frame_view.orthographic;
+                vk_req.ortho_scale = pc_request.frame_view.ortho_scale;
+                vk_req.focal_y = focal_y;
+                vk_req.voxel_size = pc_request.render.voxel_size;
+                vk_req.scaling_modifier = pc_request.render.scaling_modifier;
+
+                LOG_TIMER("renderVulkanFrame.point_cloud_vulkan");
+                auto render_result = point_cloud_vulkan_renderer_->render(
+                    *context.vulkan_context, vk_req);
+                if (!render_result) {
+                    LOG_ERROR("Point cloud Vulkan render failed: {}", render_result.error());
+                    return std::nullopt;
+                }
+
+                render_lock.reset();
+                vulkan_viewport_image_.reset();
+                vulkan_external_viewport_image_ = render_result->image;
+                vulkan_external_viewport_image_view_ = render_result->image_view;
+                vulkan_external_viewport_image_layout_ = render_result->image_layout;
+                vulkan_external_viewport_image_generation_ = render_result->generation;
+                vulkan_viewport_image_size_ = render_result->size;
+                vulkan_viewport_image_flip_y_ = render_result->flip_y;
+                vulkan_gt_comparison_content_size_ = {0, 0};
+
+                lfs::rendering::FrameMetadata metadata{};
+                metadata.valid = true;
+                metadata.flip_y = render_result->flip_y;
+                viewport_artifact_service_.clearViewportOutput();
+                viewport_artifact_service_.setLazyCapture(
+                    []() -> std::shared_ptr<lfs::core::Tensor> { return {}; },
+                    metadata,
+                    render_result->size);
+
+                if (resize_result.completed) {
+                    frame_lifecycle_service_.noteResizeCompleted();
+                    lfs::core::Tensor::trim_memory_pool();
+                }
+                queueCameraMetricsRefreshIfStale(scene_manager);
+                viewport_interaction_context_.scene_manager = scene_manager;
+                split_view_service_.updateInfo(FrameResources{});
+
+                if (!frame_ctx.scene_state.meshes.empty() ||
+                    environmentBackgroundEnabled(settings_)) {
+                    auto mesh_frame = populateMeshFrame(frame_ctx, settings_, pending_split_view);
+                    populate_independent_split_mesh_panels(mesh_frame);
+                    if (render_result->depth_image_view != VK_NULL_HANDLE) {
+                        // Hardware depth attachment stores Vulkan-native NDC z; the
+                        // depth-blit pass can use it directly without near/far conversion.
+                        mesh_frame.depth_blit.external_image_view = render_result->depth_image_view;
+                        mesh_frame.depth_blit.external_image_generation = render_result->depth_generation;
+                        mesh_frame.depth_blit.depth_is_ndc = true;
+                        mesh_frame.depth_blit.flip_y = render_result->flip_y;
+                    }
+                    setVulkanMeshFrame(std::move(mesh_frame));
+                } else {
+                    clearVulkanMeshFrame();
+                }
+
+                return VulkanFrameResult{
+                    .image = {},
+                    .external_image = vulkan_external_viewport_image_,
+                    .external_image_view = vulkan_external_viewport_image_view_,
+                    .external_image_layout = vulkan_external_viewport_image_layout_,
+                    .external_image_generation = vulkan_external_viewport_image_generation_,
+                    .size = vulkan_viewport_image_size_,
+                    .flip_y = vulkan_viewport_image_flip_y_};
+            };
+            if (auto vk_result = try_vulkan(); vk_result) {
+                return *vk_result;
+            }
+
+            // CUDA fallback (no Vulkan context, or render failed)
+            LOG_TIMER("renderVulkanFrame.renderPointCloudImage");
+            auto render_result = has_renderable_model
+                                     ? engine_->renderPointCloudImage(*model, pc_request)
+                                     : engine_->renderPointCloudImage(*frame_ctx.scene_state.point_cloud, pc_request);
             if (render_result) {
                 rendered_image = std::move(render_result->image);
                 rendered_metadata = std::move(render_result->metadata);

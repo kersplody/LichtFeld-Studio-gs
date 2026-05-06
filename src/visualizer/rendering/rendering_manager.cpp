@@ -5,6 +5,7 @@
 #include "rendering_manager.hpp"
 #include "core/events.hpp"
 #include "core/logger.hpp"
+#include "point_cloud_vulkan_renderer.hpp"
 #include "rendering/ppisp_overrides_utils.hpp"
 #include "rendering/rasterizer/rasterization/include/rasterization_api_tensor.h"
 #include "rendering/rasterizer/rasterization/include/rasterization_config.h"

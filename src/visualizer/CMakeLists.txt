@@ -242,7 +242,8 @@ if(ENABLE_VULKAN_VIEWER)
             PRIVATE
             gui/rmlui/rmlui_vk_backend.cpp
             rendering/vksplat_input_packer.cpp
-            rendering/vksplat_viewport_renderer.cpp)
+            rendering/vksplat_viewport_renderer.cpp
+            rendering/point_cloud_vulkan_renderer.cpp)
     set(glslang_DIR "${CMAKE_BINARY_DIR}/vcpkg_installed/${VCPKG_TARGET_TRIPLET}/share/glslang"
         CACHE PATH "Path to vcpkg-installed glslang config" FORCE)
     find_package(glslang CONFIG REQUIRED)
@@ -282,6 +283,8 @@ if(ENABLE_VULKAN_VIEWER)
     compile_shader(lfs_visualizer "${LFS_VIEWPORT_SHADER_SOURCE_DIR}/depth_blit.frag" "${LFS_VIEWPORT_SHADER_BINARY_DIR}/depth_blit.frag.spv.h" kDepthBlitFragSpv)
     compile_shader(lfs_visualizer "${LFS_VIEWPORT_SHADER_SOURCE_DIR}/split_view.frag" "${LFS_VIEWPORT_SHADER_BINARY_DIR}/split_view.frag.spv.h" kSplitViewFragSpv)
     compile_shader(lfs_visualizer "${LFS_VIEWPORT_SHADER_SOURCE_DIR}/vksplat_compose.comp" "${LFS_VIEWPORT_SHADER_BINARY_DIR}/vksplat_compose.comp.spv.h" kVkSplatComposeCompSpv)
+    compile_shader(lfs_visualizer "${LFS_VIEWPORT_SHADER_SOURCE_DIR}/point_cloud.vert" "${LFS_VIEWPORT_SHADER_BINARY_DIR}/point_cloud.vert.spv.h" kPointCloudVertSpv)
+    compile_shader(lfs_visualizer "${LFS_VIEWPORT_SHADER_SOURCE_DIR}/point_cloud.frag" "${LFS_VIEWPORT_SHADER_BINARY_DIR}/point_cloud.frag.spv.h" kPointCloudFragSpv)
 
     target_link_libraries(lfs_visualizer
             PRIVATE
