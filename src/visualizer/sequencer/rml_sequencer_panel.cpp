@@ -8,7 +8,6 @@
 #include "gui/film_strip_renderer.hpp"
 #include "gui/rmlui/rml_document_utils.hpp"
 #include "gui/rmlui/rml_input_utils.hpp"
-#include "gui/rmlui/rml_panel_host.hpp"
 #include "gui/rmlui/rml_theme.hpp"
 #include "gui/rmlui/rml_tooltip.hpp"
 #include "gui/rmlui/rmlui_manager.hpp"
@@ -911,6 +910,15 @@ namespace lfs::vis {
 
         if (!rml_manager_ || !rml_manager_->getVulkanRenderInterface())
             return;
+
+        if (document_) {
+            Rml::Element* body = document_->GetElementById("body");
+            if (!body)
+                body = document_;
+            const int local_mx = static_cast<int>(input.mouse_x - cached_panel_x_);
+            const int local_my = static_cast<int>(input.mouse_y - cached_panel_y_);
+            tooltip_.apply(body, local_mx, local_my, w, h);
+        }
 
         const float context_x = panel_x - input.screen_x;
         const float context_y = panel_y - input.screen_y;

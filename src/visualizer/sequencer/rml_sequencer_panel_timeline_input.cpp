@@ -8,7 +8,6 @@
 #include "core/events.hpp"
 #include "gui/film_strip_renderer.hpp"
 #include "gui/rmlui/rml_input_utils.hpp"
-#include "gui/rmlui/rml_panel_host.hpp"
 #include "gui/rmlui/rml_tooltip.hpp"
 #include "gui/rmlui/rmlui_manager.hpp"
 #include "gui/rmlui/sdl_rml_key_mapping.hpp"
@@ -254,7 +253,7 @@ namespace lfs::vis {
                    local_x < cached_panel_width_ && local_y < total_h;
 
         if (!hovered_) {
-            gui::RmlPanelHost::setFrameTooltip({}, nullptr);
+            tooltip_.setHover({}, nullptr);
             if (last_hovered_)
                 rml_context_->ProcessMouseLeave();
             last_hovered_ = false;
@@ -286,7 +285,7 @@ namespace lfs::vis {
 
         auto* hover = rml_context_->GetHoverElement();
         if (hover) {
-            gui::RmlPanelHost::setFrameTooltip(gui::resolveRmlTooltip(hover), hover);
+            tooltip_.setHover(gui::resolveRmlTooltip(hover), hover);
 
             if (input.mouse_clicked[1]) {
                 for (auto* el = hover; el; el = el->GetParentNode()) {
@@ -306,7 +305,7 @@ namespace lfs::vis {
                 }
             }
         } else {
-            gui::RmlPanelHost::setFrameTooltip({}, nullptr);
+            tooltip_.setHover({}, nullptr);
         }
 
         auto* const focused = rml_context_->GetFocusElement();

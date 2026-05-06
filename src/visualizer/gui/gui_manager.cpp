@@ -4948,7 +4948,6 @@ namespace lfs::vis::gui {
         rml_viewport_overlay_.render();
 
         applyFrameInputCapture();
-        const std::string frame_tooltip = RmlPanelHost::consumeFrameTooltip();
 
         // Recompute viewport layout
         viewport_layout_ = panel_layout_.computeViewportLayout(

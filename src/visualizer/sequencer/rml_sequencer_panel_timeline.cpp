@@ -3,7 +3,6 @@
 
 #include "core/events.hpp"
 #include "gui/film_strip_renderer.hpp"
-#include "gui/rmlui/rml_panel_host.hpp"
 #include "gui/rmlui/rml_tooltip.hpp"
 #include "gui/rmlui/rmlui_manager.hpp"
 #include "sequencer/interpolation.hpp"

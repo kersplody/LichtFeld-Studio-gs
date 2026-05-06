@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "gui/rmlui/rml_tooltip.hpp"
 #include "gui/sequencer_ui_state.hpp"
 #include "sequencer_controller.hpp"
 #include <RmlUi/Core/EventListener.h>
@@ -271,6 +272,7 @@ namespace lfs::vis {
         Rml::Element* el_guide_hovered_ = nullptr;
         Rml::Element* el_guide_strip_hover_ = nullptr;
         Rml::Element* el_timeline_tooltip_ = nullptr;
+        gui::RmlTooltipController tooltip_;
 
         // Transport settings elements
         Rml::Element* el_btn_camera_path_ = nullptr;
