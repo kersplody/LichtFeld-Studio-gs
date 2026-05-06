@@ -221,8 +221,11 @@ namespace lfs::vis {
         SplitViewPanelId node_rect_panel_ = SplitViewPanelId::Left;
         struct PendingCameraContextMenuGesture {
             bool active = false;
+            bool released = false;
             int camera_uid = -1;
             glm::dvec2 press_pos{0.0, 0.0};
+            glm::dvec2 release_pos{0.0, 0.0};
+            std::chrono::steady_clock::time_point release_time{};
             PanelInteractionState interaction{};
         } pending_camera_context_menu_;
 

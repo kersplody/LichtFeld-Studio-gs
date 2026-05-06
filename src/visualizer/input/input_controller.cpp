@@ -585,6 +585,14 @@ namespace lfs::vis {
             bound_action = bindings_.getActionForMouseButton(tool_mode, mouse_btn, mods, false);
         }
 
+        const bool is_right_button = button == static_cast<int>(input::AppMouseButton::RIGHT);
+        if (action == input::ACTION_PRESS &&
+            is_right_button &&
+            pending_camera_context_menu_.active &&
+            pending_camera_context_menu_.released) {
+            clearSelectedCameraContextMenuGesture();
+        }
+
         if (action == input::ACTION_PRESS) {
             if (over_gui) {
                 return;
@@ -603,15 +611,20 @@ namespace lfs::vis {
             switch (bound_action) {
             case input::Action::CAMERA_PAN:
                 if (const auto interaction = resolvePanelInteraction(x, y); interaction && interaction->valid()) {
-                    if (button == static_cast<int>(input::AppMouseButton::RIGHT) &&
-                        hovered_camera_id_ >= 0 &&
-                        canOpenSelectedCameraContextMenu(hovered_camera_id_)) {
+                    const int context_camera_id =
+                        is_right_button && services().renderingOrNull()
+                            ? services().renderingOrNull()->pickCameraFrustum(glm::vec2(x, y))
+                            : -1;
+                    if (is_right_button &&
+                        context_camera_id >= 0 &&
+                        canOpenSelectedCameraContextMenu(context_camera_id)) {
                         pending_camera_context_menu_ = {
                             .active = true,
-                            .camera_uid = hovered_camera_id_,
+                            .camera_uid = context_camera_id,
                             .press_pos = {x, y},
                             .interaction = *interaction,
                         };
+                        hovered_camera_id_ = context_camera_id;
                         break;
                     }
 
@@ -790,11 +803,10 @@ namespace lfs::vis {
                 break;
             }
         } else if (action == input::ACTION_RELEASE) {
-            if (button == static_cast<int>(input::AppMouseButton::RIGHT) &&
-                pending_camera_context_menu_.active) {
-                const int camera_uid = pending_camera_context_menu_.camera_uid;
-                clearSelectedCameraContextMenuGesture();
-                openSelectedCameraContextMenu(camera_uid, static_cast<float>(x), static_cast<float>(y));
+            if (is_right_button && pending_camera_context_menu_.active) {
+                pending_camera_context_menu_.released = true;
+                pending_camera_context_menu_.release_pos = {x, y};
+                pending_camera_context_menu_.release_time = std::chrono::steady_clock::now();
                 return;
             }
 
@@ -981,6 +993,8 @@ namespace lfs::vis {
         }
 
         if (pending_camera_context_menu_.active &&
+            !pending_camera_context_menu_.released &&
+            isMouseButtonPressed(static_cast<int>(input::AppMouseButton::RIGHT)) &&
             glm::length(current_pos - pending_camera_context_menu_.press_pos) >= kCameraContextMenuDragThreshold) {
             const auto interaction = pending_camera_context_menu_.interaction;
             clearSelectedCameraContextMenuGesture();
@@ -1541,9 +1555,30 @@ namespace lfs::vis {
             input_router_->syncPressedMouseButtons(any_mouse_buttons_pressed);
         }
 
-        if (pending_camera_context_menu_.active &&
-            !isMouseButtonPressed(static_cast<int>(input::AppMouseButton::RIGHT))) {
-            clearSelectedCameraContextMenuGesture();
+        if (pending_camera_context_menu_.active) {
+            const bool right_button_down =
+                isMouseButtonPressed(static_cast<int>(input::AppMouseButton::RIGHT));
+            if (pending_camera_context_menu_.released) {
+                if (right_button_down) {
+                    clearSelectedCameraContextMenuGesture();
+                } else {
+                    const auto now = std::chrono::steady_clock::now();
+                    const double elapsed =
+                        std::chrono::duration<double>(
+                            now - pending_camera_context_menu_.release_time)
+                            .count();
+                    if (elapsed >= DOUBLE_CLICK_TIME) {
+                        const int camera_uid = pending_camera_context_menu_.camera_uid;
+                        const glm::dvec2 release_pos = pending_camera_context_menu_.release_pos;
+                        clearSelectedCameraContextMenuGesture();
+                        openSelectedCameraContextMenu(camera_uid,
+                                                      static_cast<float>(release_pos.x),
+                                                      static_cast<float>(release_pos.y));
+                    }
+                }
+            } else if (!right_button_down) {
+                clearSelectedCameraContextMenuGesture();
+            }
         }
 
         const bool drag_button_released = drag_button_ >= 0 &&
