@@ -466,6 +466,55 @@
     color: #a6adc8;
 }
 
+#histogram-range-of-interest {
+    display: flex;
+    align-items: center;
+    gap: 8dp;
+    flex-shrink: 0;
+}
+
+.range-of-interest-label {
+    font-size: 9dp;
+    font-weight: 600;
+    letter-spacing: 0.3dp;
+    color: #bac2de;
+}
+
+.range-input {
+    width: 84dp;
+    min-width: 60dp;
+}
+
+.range-separator {
+    color: rgba(186, 194, 222, 180);
+    font-size: 11dp;
+}
+
+.range-reset {
+    min-width: 56dp;
+    margin-left: 4dp;
+}
+
+.range-reset:disabled {
+    color: rgba(186, 194, 222, 100);
+}
+
+#compare-range-of-interest {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6dp;
+    flex-shrink: 0;
+}
+
+.compare-axis-marker {
+    font-size: 10dp;
+    font-weight: 700;
+    letter-spacing: 0.4dp;
+    color: #a6adc8;
+    margin-left: 6dp;
+}
+
 #histogram-chart {
     position: relative;
     flex: 1;

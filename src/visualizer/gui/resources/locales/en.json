@@ -1459,6 +1459,8 @@
     "log_scale": "Log Scale",
     "samples": "Samples",
     "range": "Range",
+    "range_of_interest": "Range of Interest:",
+    "reset": "Reset",
     "mean": "Mean",
     "median": "Median",
     "p95": "P95",

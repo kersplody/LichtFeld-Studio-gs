@@ -1455,6 +1455,8 @@
     "log_scale": "로그 스케일",
     "samples": "Samples",
     "range": "Range",
+    "range_of_interest": "관심 범위:",
+    "reset": "재설정",
     "mean": "Mean",
     "median": "Median",
     "p95": "P95",

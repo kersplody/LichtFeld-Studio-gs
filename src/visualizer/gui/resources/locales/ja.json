@@ -1455,6 +1455,8 @@
     "log_scale": "対数スケール",
     "samples": "Samples",
     "range": "Range",
+    "range_of_interest": "対象範囲:",
+    "reset": "リセット",
     "mean": "Mean",
     "median": "Median",
     "p95": "P95",
