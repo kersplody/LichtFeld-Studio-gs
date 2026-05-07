@@ -776,7 +776,8 @@ namespace lfs::vis {
         ASSERT_TRUE(loaded.loadProfileFromFile(profile_path));
 
         EXPECT_FALSE(loaded.getTriggerForAction(
-            input::Action::CAMERA_PAN, input::ToolMode::SELECTION).has_value());
+                               input::Action::CAMERA_PAN, input::ToolMode::SELECTION)
+                         .has_value());
         EXPECT_EQ(loaded.getActionForDrag(input::ToolMode::SELECTION,
                                           input::MouseButton::MIDDLE,
                                           input::MODIFIER_NONE),
