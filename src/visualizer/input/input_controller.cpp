@@ -2072,11 +2072,14 @@ namespace lfs::vis {
             glm::vec3(T_data[0], T_data[1], T_data[2]),
             scene_transform);
 
+        float pivot_distance = glm::length(target_viewport.camera.getPivot() - target_viewport.camera.t);
+        if (!std::isfinite(pivot_distance) || pivot_distance < 0.1f)
+            pivot_distance = 5.0f;
+
         target_viewport.camera.R = pose.rotation;
         target_viewport.camera.t = pose.translation;
 
-        // Update pivot point to be in front of camera
-        target_viewport.camera.updatePivotFromCamera();
+        target_viewport.camera.updatePivotFromCamera(pivot_distance);
 
         // Save as home position if this is the first camera view
         if (!target_viewport.camera.home_saved) {
