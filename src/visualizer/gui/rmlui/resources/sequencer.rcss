@@ -422,17 +422,14 @@ body {
 .keyframe {
     display: block;
     position: absolute;
-    width: 12dp;
-    height: 12dp;
+    width: 14dp;
+    height: 14dp;
     top: 50%;
-    margin-top: -6dp;
-    margin-left: -6dp;
+    margin-top: -7dp;
+    margin-left: -7dp;
     transform: rotate(45deg);
     border-radius: 1dp;
-}
-
-.keyframe:hover {
-    opacity: 0.85;
+    pointer-events: none;
 }
 
 .keyframe.selected {
@@ -460,12 +457,13 @@ body {
 #playhead-handle {
     display: block;
     position: absolute;
-    top: -10dp;
-    left: -4dp;
-    width: 8dp;
-    height: 12dp;
+    top: -14dp;
+    left: -7dp;
+    width: 14dp;
+    height: 14dp;
     background-color: #ff6688;
-    border-radius: 4dp;
+    border-radius: 7dp;
+    pointer-events: none;
 }
 
 #time-display {
