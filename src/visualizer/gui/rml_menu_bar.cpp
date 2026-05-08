@@ -2,16 +2,11 @@
  *
  * SPDX-License-Identifier: GPL-3.0-or-later */
 
-// clang-format off
-#include <glad/glad.h>
-// clang-format on
-
 #include "gui/rml_menu_bar.hpp"
 #include "core/logger.hpp"
 #include "gui/rmlui/rml_document_utils.hpp"
 #include "gui/rmlui/rml_theme.hpp"
 #include "gui/rmlui/rmlui_manager.hpp"
-#include "gui/rmlui/rmlui_render_interface.hpp"
 #include "internal/resource_paths.hpp"
 #include "operator/operator_registry.hpp"
 #include "python/python_runtime.hpp"
@@ -253,7 +248,6 @@ namespace lfs::vis::gui {
         menu_labels_.clear();
         dropdown_items_.clear();
         open_menu_idname_.clear();
-        fbo_.destroy();
         if (rml_context_ && rml_manager_)
             rml_manager_->destroyContext("menu_bar");
         rml_context_ = nullptr;
@@ -271,6 +265,53 @@ namespace lfs::vis::gui {
 
         if (open_menu_index_ >= 0)
             closeDropdown();
+    }
+
+    void RmlMenuBar::reloadResources() {
+        if (!rml_context_)
+            return;
+
+        if (open_menu_index_ >= 0)
+            closeDropdown();
+
+        if (document_) {
+            rml_context_->UnloadDocument(document_);
+            rml_context_->Update();
+        }
+
+        document_ = nullptr;
+        menu_items_ = nullptr;
+        dropdown_container_ = nullptr;
+        dropdown_overlay_ = nullptr;
+        base_rcss_.clear();
+        has_theme_signature_ = false;
+        wants_input_ = false;
+        render_needed_ = true;
+        mouse_pos_valid_ = false;
+        last_ctx_w_ = 0;
+        last_ctx_h_ = 0;
+        last_document_h_ = 0;
+
+        try {
+            const auto rml_path = lfs::vis::getAssetPath("rmlui/menubar.rml");
+            document_ = rml_documents::loadDocument(rml_context_, rml_path);
+            if (!document_) {
+                LOG_ERROR("RmlMenuBar: failed to reload menubar.rml");
+                return;
+            }
+            document_->Show();
+        } catch (const std::exception& e) {
+            LOG_ERROR("RmlMenuBar: resource not found during reload: {}", e.what());
+            return;
+        }
+
+        menu_items_ = document_->GetElementById("menu-items");
+        dropdown_overlay_ = document_->GetElementById("dropdown-overlay");
+        dropdown_container_ = document_->GetElementById("dropdown-container");
+
+        rebuildLabels();
+        menu_model_.DirtyVariable("dropdown_items");
+        updateTheme();
     }
 
     void RmlMenuBar::updateLabels(const std::vector<std::string>& labels,
@@ -486,35 +527,6 @@ namespace lfs::vis::gui {
         render_needed_ = true;
     }
 
-    std::string RmlMenuBar::generateThemeRCSS(const lfs::vis::Theme& t) const {
-        using rml_theme::colorToRml;
-
-        const auto bg = colorToRml(t.menu_background());
-        const auto text = colorToRml(t.palette.text);
-        const auto text_dim = colorToRml(t.palette.text_dim);
-        const auto hover = colorToRml(t.menu_hover());
-        const auto active = colorToRml(t.menu_active());
-        const auto border = rml_theme::darkenColorToRml(t.palette.surface, t.menu.bottom_border_darken);
-        const auto popup_bg = colorToRml(t.menu_popup_background());
-        const auto popup_border = colorToRml(t.menu_border());
-
-        return std::format(
-            "body {{ color: {}; }}\n"
-            "#menu-items {{ background-color: {}; }}\n"
-            ".menu-label:hover {{ background-color: {}; }}\n"
-            ".menu-label.active {{ background-color: {}; }}\n"
-            "#bottom-border {{ background-color: {}; }}\n"
-            ".dropdown-popup {{ background-color: {}; border-color: {}; }}\n"
-            ".menu-item:hover {{ background-color: {}; }}\n"
-            ".menu-item.disabled {{ color: {}; }}\n"
-            ".menu-item.disabled:hover {{ background-color: transparent; }}\n"
-            ".menu-item .shortcut {{ color: {}; }}\n"
-            ".menu-separator {{ background-color: {}; }}\n",
-            text, bg, hover, active, border,
-            popup_bg, popup_border,
-            hover, text_dim, text_dim, popup_border);
-    }
-
     bool RmlMenuBar::updateTheme() {
         if (!document_)
             return false;
@@ -528,14 +540,14 @@ namespace lfs::vis::gui {
         if (base_rcss_.empty())
             base_rcss_ = rml_theme::loadBaseRCSS("rmlui/menubar.rcss");
 
-        rml_theme::applyTheme(document_, base_rcss_, rml_theme::generateAllThemeMedia([this](const auto& th) { return generateThemeRCSS(th); }));
+        rml_theme::applyTheme(document_, base_rcss_, rml_theme::loadBaseRCSS("rmlui/menubar.theme.rcss"));
         return true;
     }
 
     void RmlMenuBar::draw(int screen_w, int screen_h) {
         if (!rml_context_ || !document_)
             return;
-        if (rml_manager_->shouldDeferFboUpdate(fbo_))
+        if (!rml_manager_ || !rml_manager_->getVulkanRenderInterface())
             return;
         const bool theme_changed = updateTheme();
 
@@ -553,8 +565,13 @@ namespace lfs::vis::gui {
 
         const bool size_changed = (ctx_w != last_ctx_w_ || ctx_h != last_ctx_h_);
         const bool needs_render = render_needed_ || theme_changed || size_changed;
-        if (!needs_render)
+        if (!needs_render) {
+            rml_manager_->queueVulkanContext(rml_context_, 0.0f, 0.0f, true,
+                                             true, 0.0f, 0.0f,
+                                             static_cast<float>(screen_w),
+                                             static_cast<float>(ctx_h));
             return;
+        }
 
         rml_context_->SetDimensions(Rml::Vector2i(ctx_w, ctx_h));
         if (ctx_h != last_document_h_) {
@@ -563,25 +580,10 @@ namespace lfs::vis::gui {
         }
         rml_context_->Update();
 
-        fbo_.ensure(ctx_w, ctx_h);
-        if (!fbo_.valid())
-            return;
-
-        auto* render = rml_manager_->getRenderInterface();
-        assert(render);
-        render->SetViewport(ctx_w, ctx_h);
-
-        GLint prev_fbo = 0;
-        fbo_.bind(&prev_fbo);
-        render->SetTargetFramebuffer(fbo_.fbo());
-
-        render->BeginFrame();
-        rml_context_->Render();
-        render->EndFrame();
-
-        render->SetTargetFramebuffer(0);
-        fbo_.unbind(prev_fbo);
-
+        rml_manager_->queueVulkanContext(rml_context_, 0.0f, 0.0f, true,
+                                         true, 0.0f, 0.0f,
+                                         static_cast<float>(screen_w),
+                                         static_cast<float>(ctx_h));
         last_ctx_w_ = ctx_w;
         last_ctx_h_ = ctx_h;
         render_needed_ = false;

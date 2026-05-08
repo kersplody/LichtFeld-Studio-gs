@@ -215,6 +215,11 @@ namespace lfs::training {
             return cameras_[indices_[index]].get();
         }
 
+        size_t local_to_source(size_t index) const {
+            assert(index < indices_.size());
+            return indices_[index];
+        }
+
         /// Get single example by index
         CameraExample get(size_t index) const {
             if (index >= indices_.size()) {
@@ -225,7 +230,7 @@ namespace lfs::training {
             auto& cam = cameras_[camera_idx];
 
             // Load image using the new LibTorch-free Camera
-            lfs::core::Tensor image = cam->load_and_get_image(config_.resize_factor, config_.max_width);
+            lfs::core::Tensor image = cam->load_and_get_image(config_.resize_factor, config_.max_width, true);
 
             return {
                 {cam.get(), std::move(image)},
@@ -604,7 +609,8 @@ namespace lfs::training {
                 if (!indices || indices->empty())
                     break;
 
-                const size_t camera_idx = (*indices)[0];
+                const size_t local_idx = (*indices)[0];
+                const size_t camera_idx = dataset_->local_to_source(local_idx);
                 auto& cam = dataset_->get_cameras()[camera_idx];
                 const size_t seq_id = next_sequence_id_++;
                 sequence_to_camera_[seq_id] = camera_idx;
@@ -614,6 +620,7 @@ namespace lfs::training {
                 request.path = cam->image_path();
                 request.params.resize_factor = dataset_->get_resize_factor();
                 request.params.max_width = dataset_->get_max_width();
+                request.params.output_uint8 = true;
                 if (cam->is_undistort_prepared()) {
                     request.undistort = &cam->undistort_params();
                     request.params.undistort = request.undistort;

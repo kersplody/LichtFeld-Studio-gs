@@ -46,7 +46,9 @@ namespace lfs::vis {
 
             // Export
             void performExport(lfs::core::ExportFormat format, const std::filesystem::path& path,
-                               const std::vector<std::string>& node_names, int sh_degree);
+                               const std::vector<std::string>& node_names, int sh_degree,
+                               const std::vector<float>& rad_lod_ratios = {},
+                               bool rad_flip_y = false);
             [[nodiscard]] bool isExporting() const { return export_state_.active.load(); }
             [[nodiscard]] float getExportProgress() const { return export_state_.progress.load(); }
             [[nodiscard]] std::string getExportStage() const {
@@ -171,6 +173,7 @@ namespace lfs::vis {
                                   const lfs::core::param::TrainingParameters& params);
             void checkAsyncImportCompletion();
             void applyLoadedDataToScene();
+            void applyAutoCropToLoadedScene();
             void startVideoExport(const std::filesystem::path& path,
                                   const io::video::VideoExportOptions& options);
             void resetVideoExportEnvironmentState();
@@ -185,6 +188,8 @@ namespace lfs::vis {
                 std::string stage;
                 std::string error;
                 std::filesystem::path path;
+                std::vector<float> rad_lod_ratios; // Custom LOD ratios for RAD export
+                bool rad_flip_y = false;           // Y-flip for RAD export (off by default)
                 mutable std::mutex mutex;
                 std::optional<std::jthread> thread;
             };
@@ -219,6 +224,7 @@ namespace lfs::vis {
                 size_t num_points{0};
                 bool success{false};
                 bool is_mesh{false};
+                std::atomic<bool> apply_auto_crop{false};
                 std::chrono::steady_clock::time_point completion_time;
                 std::optional<lfs::io::LoadResult> load_result;
                 lfs::core::param::TrainingParameters params;
@@ -240,7 +246,7 @@ namespace lfs::vis {
             };
             Mesh2SplatState mesh2splat_state_;
 
-            void executeMesh2SplatOnGlThread();
+            void executeMesh2SplatOnGraphicsThread();
             void applyMesh2SplatResult();
 
             struct SplatSimplifyState {

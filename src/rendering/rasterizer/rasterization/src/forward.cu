@@ -9,8 +9,10 @@
 #include "helper_math.h"
 #include "rasterization_config.h"
 #include "utils.h"
+#include <algorithm>
 #include <array>
 #include <cub/cub.cuh>
+#include <cuda_runtime.h>
 #include <functional>
 #include <stdexcept>
 #include <vector>
@@ -200,8 +202,7 @@ __global__ void invalidate_outside_crop_kernel(
 }
 
 // Copy mean2d to screen positions, flipping Y to match window coordinates
-// The rasterizer's mean2d has Y increasing upward (OpenGL convention),
-// but window coordinates have Y increasing downward
+// The rasterizer's mean2d has Y increasing upward, but window coordinates have Y increasing downward.
 __global__ void copy_screen_positions_kernel(
     const float2* __restrict__ mean2d,
     float2* __restrict__ screen_positions_out,
@@ -212,7 +213,7 @@ __global__ void copy_screen_positions_kernel(
         return;
 
     float2 pos = mean2d[idx];
-    // Convert OpenGL-style rasterizer Y to window-space Y.
+    // Convert rasterizer Y-up output to window-space Y-down output.
     // Keep invalid markers as-is (they have large negative values)
     if (pos.y > kInvalidScreenPositionThreshold) {
         pos.y = height - pos.y;
@@ -621,19 +622,19 @@ void lfs::rendering::forward(
         }
     }
 
-    uint n_visible_primitives;
+    uint n_visible_primitives = 0;
+    uint n_instances = 0;
     cudaStreamSynchronize(stream);
     cudaMemcpy(&n_visible_primitives, per_primitive_buffers.n_visible_primitives, sizeof(uint), cudaMemcpyDeviceToHost);
-    uint n_instances;
     cudaMemcpy(&n_instances, per_primitive_buffers.n_instances, sizeof(uint), cudaMemcpyDeviceToHost);
 
     if (n_visible_primitives > 0x7fffffffu) {
-        log_rasterization_failure_diagnostics(per_primitive_buffers, n_primitives, n_visible_primitives, n_instances);
+        log_rasterization_failure_diagnostics(per_primitive_buffers, buffer_n_primitives, n_visible_primitives, n_instances);
         LOG_ERROR("Rasterization suspicious visible primitive count: {}", n_visible_primitives);
         throw std::runtime_error("Rasterization failed: visible primitive count exceeds 32-bit launch range");
     }
     if (n_instances > 0x7fffffffu) {
-        log_rasterization_failure_diagnostics(per_primitive_buffers, n_primitives, n_visible_primitives, n_instances);
+        log_rasterization_failure_diagnostics(per_primitive_buffers, buffer_n_primitives, n_visible_primitives, n_instances);
         LOG_ERROR(
             "Rasterization suspicious instance count: {} instances across {} visible primitives",
             n_instances,
@@ -643,11 +644,11 @@ void lfs::rendering::forward(
 
     const int n_visible_primitives_i = static_cast<int>(n_visible_primitives);
     const int n_instances_i = static_cast<int>(n_instances);
-    const int alloc_instances = std::max(static_cast<int>(n_instances), 1);
+    const int alloc_instances = std::max(n_instances_i, 1);
     const size_t per_instance_bytes = required<PerInstanceBuffers>(alloc_instances);
     constexpr size_t hard_alloc_bytes = size_t{128} << 30;
     if (per_instance_bytes > hard_alloc_bytes) {
-        log_rasterization_failure_diagnostics(per_primitive_buffers, n_primitives, n_visible_primitives, n_instances);
+        log_rasterization_failure_diagnostics(per_primitive_buffers, buffer_n_primitives, n_visible_primitives, n_instances);
         LOG_ERROR(
             "Rasterization rejecting suspicious instance allocation: {} instances across {} visible primitives would request {:.2f} GiB",
             n_instances,
@@ -690,6 +691,7 @@ void lfs::rendering::forward(
         kernels::forward::create_instances_cu<<<div_round_up(n_visible_primitives_i, config::block_size_create_instances), config::block_size_create_instances, 0, stream>>>(
             per_primitive_buffers.primitive_indices.Current(),
             per_primitive_buffers.offset,
+            per_primitive_buffers.n_touched_tiles,
             per_primitive_buffers.screen_bounds,
             per_primitive_buffers.mean2d,
             per_primitive_buffers.conic_opacity,
@@ -707,7 +709,7 @@ void lfs::rendering::forward(
                 per_instance_buffers.primitive_indices,
                 n_instances_i,
                 0,
-                static_cast<int>(sizeof(ushort) * 8),
+                static_cast<int>(sizeof(uint) * 8),
                 stream);
             CHECK_CUDA(config::debug, "cub::DeviceRadixSort::SortPairs (Tile)")
         }

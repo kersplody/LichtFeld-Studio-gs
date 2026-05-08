@@ -112,7 +112,7 @@ namespace {
             ::args::ValueFlag<int> max_cap(training_group, "max_cap", "Maximum number of Gaussians", {"max-cap"});
             ::args::ValueFlag<float> min_opacity(training_group, "min_opacity", "Minimum opacity threshold", {"min-opacity"});
             ::args::ValueFlag<float> steps_scaler(training_group, "steps_scaler", "Scale training steps by factor", {"steps-scaler"});
-            ::args::ValueFlag<int> tile_mode(training_group, "tile_mode", "Tile mode for memory-efficient training: 1=1 tile, 2=2 tiles, 4=4 tiles (default: 1)", {"tile-mode"});
+            ::args::ValueFlag<int> tile_mode(training_group, "tile_mode", "Tile mode for 3DGUT memory-efficient training: 1=1 tile, 2=2 tiles, 4=4 tiles (default: 1; ignored for 3DGS/FastGS)", {"tile-mode"});
             ::args::Flag use_error_map(training_group, "use_error_map", "Weight MRNF refine signal by per-pixel SSIM error map", {"use-error-map"});
             ::args::Flag use_edge_map(training_group, "use_edge_map", "Weight MRNF refine signal by Sobel edge map on GT images", {"use-edge-map"});
 
@@ -141,10 +141,17 @@ namespace {
                                                                 {"2", 2},
                                                                 {"4", 4},
                                                                 {"8", 8}});
-            ::args::ValueFlag<int> max_width(dataset_group, "max_width", "Max width of images in px (default: 3840)", {"max-width"});
+            ::args::ValueFlag<int> max_width(dataset_group, "max_width", "Max width of images in px; 0 disables the cap (default: 3840)", {"max-width"});
             ::args::Flag no_cpu_cache(dataset_group, "no_cpu_cache", "Disable CPU memory caching (default: enabled)", {"no-cpu-cache"});
             ::args::Flag no_fs_cache(dataset_group, "no_fs_cache", "Disable filesystem caching (default: enabled)", {"no-fs-cache"});
             ::args::Flag undistort(dataset_group, "undistort", "Undistort images on-the-fly before training", {"undistort"});
+            ::args::MapFlag<std::string, std::string> centralize(dataset_group, "mode",
+                                                                 "Centralize dataset origin: off, by_pointcloud, by_cameras (default: off)",
+                                                                 {"centralize"},
+                                                                 std::unordered_map<std::string, std::string>{
+                                                                     {"off", "off"},
+                                                                     {"by_pointcloud", "by_pointcloud"},
+                                                                     {"by_cameras", "by_cameras"}});
 
             // =============================================================================
             // MASK OPTIONS
@@ -209,7 +216,6 @@ namespace {
 #ifndef LFS_BUILD_PORTABLE
             ::args::Flag no_splash(ui_group, "no_splash", "Skip splash screen on startup", {"no-splash"});
 #endif
-            ::args::Flag no_interop(ui_group, "no_interop", "Disable CUDA-GL interop (use CPU fallback for display)", {"no-interop"});
             ::args::Flag debug_python(ui_group, "debug_python", "Start debugpy listener on port 5678 for plugin debugging", {"debug-python"});
             ::args::ValueFlag<int> debug_python_port(ui_group, "port", "Port for debugpy listener (default: 5678)", {"debug-python-port"});
 
@@ -451,11 +457,8 @@ namespace {
 
             if (max_width) {
                 int width = ::args::get(max_width);
-                if (width <= 0) {
-                    return std::unexpected("ERROR: --max-width must be greather than 0");
-                }
-                if (width > 4096) {
-                    return std::unexpected("ERROR: --max-width cannot be higher than 4096");
+                if (width < 0) {
+                    return std::unexpected("ERROR: --max-width must be 0 or greater");
                 }
             }
 
@@ -521,7 +524,7 @@ namespace {
                                         // Capture values, not references
                                         iterations_val = cli_option_present({"-i", "--iter"}) ? std::optional<uint32_t>(::args::get(iterations)) : std::optional<uint32_t>(),
                                         resize_factor_val = resize_factor ? std::optional<int>(::args::get(resize_factor)) : std::optional<int>(1), // default 1
-                                        max_width_val = max_width ? std::optional<int>(::args::get(max_width)) : std::optional<int>(3840),          // default 3840
+                                        max_width_val = max_width ? std::optional<int>(::args::get(max_width)) : std::optional<int>(3840),
                                         no_cpu_cache_flag = static_cast<bool>(no_cpu_cache),
                                         no_fs_cache_flag = static_cast<bool>(no_fs_cache),
                                         max_cap_val = cli_option_present({"--max-cap"}) ? std::optional<int>(::args::get(max_cap)) : std::optional<int>(),
@@ -546,6 +549,7 @@ namespace {
                                         mask_mode_val = cli_option_present({"--mask-mode"}) ? std::optional<lfs::core::param::MaskMode>(::args::get(mask_mode)) : std::optional<lfs::core::param::MaskMode>(),
                                         // Python scripts
                                         python_scripts_val = cli_option_present({"--python-script"}) ? std::optional<std::vector<std::string>>(::args::get(python_scripts)) : std::optional<std::vector<std::string>>(),
+                                        centralize_val = cli_option_present({"--centralize"}) ? std::optional<std::string>(::args::get(centralize)) : std::optional<std::string>(),
                                         // Capture flag states
                                         enable_mip_flag = bool(enable_mip),
                                         use_bilateral_grid_flag = bool(use_bilateral_grid),
@@ -562,7 +566,6 @@ namespace {
 #else
                                         no_splash_flag = bool(no_splash),
 #endif
-                                        no_interop_flag = bool(no_interop),
                                         debug_python_flag = bool(debug_python),
                                         debug_python_port_val = cli_option_present({"--debug-python-port"}) ? std::optional<int>(::args::get(debug_python_port)) : std::optional<int>(),
                                         enable_save_eval_images_flag = bool(enable_save_eval_images),
@@ -638,7 +641,6 @@ namespace {
                 setFlag(headless_flag, opt.headless);
                 setFlag(auto_train_flag, opt.auto_train);
                 setFlag(no_splash_flag, opt.no_splash);
-                setFlag(no_interop_flag, opt.no_interop);
                 setFlag(debug_python_flag, opt.debug_python);
                 setVal(debug_python_port_val, opt.debug_python_port);
                 setFlag(enable_save_eval_images_flag, opt.enable_save_eval_images);
@@ -659,6 +661,7 @@ namespace {
                 // Also propagate to dataset config for loading
                 ds.invert_masks = opt.invert_masks;
                 ds.mask_threshold = opt.mask_threshold;
+                setVal(centralize_val, ds.centralize_dataset);
 
                 // Python scripts
                 if (python_scripts_val) {
@@ -771,7 +774,7 @@ namespace {
         "\n"
         "SUPPORTED FORMATS:\n"
         "  Input:  .ply, .sog, .spz, .usd, .usda, .usdc, .usdz, .resume (checkpoint)\n"
-        "  Output: .ply, .sog, .spz, .usd, .usda, .usdc, .html\n"
+        "  Output: .ply, .sog, .spz, .usd, .usda, .usdc, .html, .rad\n"
         "\n";
 
     std::optional<lfs::core::param::OutputFormat> parseFormat(const std::string& str) {
@@ -790,6 +793,8 @@ namespace {
             return OutputFormat::USDA;
         if (str == "usdc" || str == ".usdc")
             return OutputFormat::USDC;
+        if (str == "rad" || str == ".rad")
+            return OutputFormat::RAD;
         return std::nullopt;
     }
 } // namespace
@@ -864,8 +869,9 @@ Commands:
     ::args::Positional<std::string> input(parser, "input", "Input file or directory");
     ::args::Positional<std::string> output(parser, "output", "Output file (optional)");
     ::args::ValueFlag<int> sh_degree(parser, "degree", "SH degree [0-3], -1 to keep original (default: -1)", {"sh-degree"});
-    ::args::ValueFlag<std::string> format(parser, "format", "Output format: ply, sog, spz, html, usd, usda, usdc", {'f', "format"});
+    ::args::ValueFlag<std::string> format(parser, "format", "Output format: ply, sog, spz, html, usd, usda, usdc, rad", {'f', "format"});
     ::args::ValueFlag<int> sog_iter(parser, "iterations", "K-means iterations for SOG (default: 10)", {"sog-iterations"});
+    ::args::ValueFlag<std::string> lod_levels(parser, "levels", "LOD levels for RAD format as comma-separated percentages (default: 100)", {"lod-levels"});
     ::args::Flag overwrite(parser, "overwrite", "Overwrite existing files without prompting", {'y', "overwrite"});
 
     std::vector<std::string> args_vec(argv + 1, argv + argc);
@@ -901,13 +907,39 @@ Commands:
         params.output_path = lfs::core::utf8_to_path(::args::get(output));
     if (sog_iter)
         params.sog_iterations = ::args::get(sog_iter);
+    if (lod_levels) {
+        const auto& levels_str = ::args::get(lod_levels);
+        params.rad_lod_levels.clear();
+        size_t start = 0;
+        while (start < levels_str.size()) {
+            size_t end = levels_str.find(',', start);
+            if (end == std::string::npos)
+                end = levels_str.size();
+            std::string token = levels_str.substr(start, end - start);
+            // Trim whitespace
+            size_t first = token.find_first_not_of(" \t");
+            size_t last = token.find_last_not_of(" \t");
+            if (first != std::string::npos && last != std::string::npos) {
+                token = token.substr(first, last - first + 1);
+            }
+            if (!token.empty()) {
+                try {
+                    float percentage = std::stof(token);
+                    params.rad_lod_levels.push_back(percentage / 100.0f);
+                } catch (...) {
+                    return std::unexpected(std::format("Invalid LOD level value: '{}'", token));
+                }
+            }
+            start = end + 1;
+        }
+    }
     params.overwrite = overwrite;
 
     if (format) {
         if (const auto fmt = parseFormat(::args::get(format))) {
             params.format = *fmt;
         } else {
-            return std::unexpected(std::format("Invalid format '{}'. Use: ply, sog, spz, html, usd, usda, usdc", ::args::get(format)));
+            return std::unexpected(std::format("Invalid format '{}'. Use: ply, sog, spz, html, usd, usda, usdc, rad", ::args::get(format)));
         }
     } else if (!params.output_path.empty()) {
         if (const auto fmt = parseFormat(params.output_path.extension().string())) {

@@ -37,12 +37,6 @@ namespace lichtfeld::Strings {
         namespace View {
             inline constexpr const char* MENU = "menu.view";
             inline constexpr const char* THEME = "menu.view.theme";
-            inline constexpr const char* THEME_DARK = "menu.view.theme.dark";
-            inline constexpr const char* THEME_LIGHT = "menu.view.theme.light";
-            inline constexpr const char* THEME_GRUVBOX = "menu.view.theme.gruvbox";
-            inline constexpr const char* THEME_CATPPUCCIN_MOCHA = "menu.view.theme.catppuccin_mocha";
-            inline constexpr const char* THEME_CATPPUCCIN_LATTE = "menu.view.theme.catppuccin_latte";
-            inline constexpr const char* THEME_NORD = "menu.view.theme.nord";
             inline constexpr const char* DEBUG_INFO = "menu.view.debug_info";
         } // namespace View
 
@@ -78,7 +72,6 @@ namespace lichtfeld::Strings {
             inline constexpr const char* COMMIT = "about.build_info.commit";
             inline constexpr const char* BUILD_TYPE = "about.build_info.build_type";
             inline constexpr const char* PLATFORM = "about.build_info.platform";
-            inline constexpr const char* CUDA_GL_INTEROP = "about.build_info.cuda_gl_interop";
         } // namespace BuildInfo
 
         namespace BuildType {
@@ -337,6 +330,9 @@ namespace lichtfeld::Strings {
         inline constexpr const char* KEYFRAME_EASING_EASE_IN = "scene.keyframe_easing.ease_in";
         inline constexpr const char* KEYFRAME_EASING_EASE_OUT = "scene.keyframe_easing.ease_out";
         inline constexpr const char* KEYFRAME_EASING_EASE_IN_OUT = "scene.keyframe_easing.ease_in_out";
+        inline constexpr const char* SAVE_ASSET = "scene.save_asset";
+        inline constexpr const char* SAVE_ASSET_AS = "scene.save_asset_as";
+        inline constexpr const char* SAVE_TO_DISK = "scene.save_to_disk";
     } // namespace Scene
 
     namespace Export {

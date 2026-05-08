@@ -6,7 +6,6 @@
 
 #include "gui/gpu_memory_query.hpp"
 #include "gui/panel_registry.hpp"
-#include "gui/rmlui/rml_fbo.hpp"
 #include <RmlUi/Core/DataModelHandle.h>
 #include <chrono>
 #include <cstddef>
@@ -29,13 +28,13 @@ namespace lfs::vis::gui {
     public:
         void init(RmlUIManager* mgr);
         void shutdown();
+        void reloadResources();
         void render(const PanelDrawContext& ctx, float x, float y, float w, float h,
                     int screen_w, int screen_h);
 
     private:
         bool updateContent(const PanelDrawContext& ctx, bool force_refresh);
         bool updateTheme();
-        std::string generateThemeRCSS(const lfs::vis::Theme& t) const;
         void setModelString(const char* name, std::string& field, std::string value);
         void setModelBool(const char* name, bool& field, bool value);
 
@@ -43,8 +42,6 @@ namespace lfs::vis::gui {
         Rml::Context* rml_context_ = nullptr;
         Rml::ElementDocument* document_ = nullptr;
         Rml::DataModelHandle model_handle_;
-
-        RmlFBO fbo_;
 
         std::size_t last_theme_signature_ = 0;
         bool has_theme_signature_ = false;

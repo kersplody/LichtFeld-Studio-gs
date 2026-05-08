@@ -8,6 +8,10 @@ message(STATUS "Configuring Python components (runner + nanobind module)")
 find_package(Python REQUIRED COMPONENTS Interpreter Development Development.Module Development.SABIModule)
 find_package(nanobind CONFIG REQUIRED)
 
+option(LFS_DEV_IMPORT_SOURCE_PYTHON
+    "Import built-in Python packages from src/python in non-portable builds"
+    ON)
+
 # vcpkg extension modules use release ABI; debug libpython has Py_DEBUG which
 # changes _PyRuntimeState layout, causing ABI mismatch crashes.
 # Force release Python library for debug builds on both Python::Python and Python::Module
@@ -102,21 +106,23 @@ set_target_properties(lfs_python_runtime PROPERTIES
     CXX_STANDARD_REQUIRED ON
     LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
-    RUNTIME_OUTPUT_DIRECTORY_DEBUG        ${CMAKE_BINARY_DIR}/Debug
-    RUNTIME_OUTPUT_DIRECTORY_RELEASE      ${CMAKE_BINARY_DIR}/Release
-    RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO ${CMAKE_BINARY_DIR}/RelWithDebInfo
-    RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL   ${CMAKE_BINARY_DIR}/MinSizeRel
 )
-if(WIN32)
+get_property(_IS_MULTI_CONFIG GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
+if(WIN32 AND _IS_MULTI_CONFIG)
     set_target_properties(lfs_python_runtime PROPERTIES
         LIBRARY_OUTPUT_DIRECTORY              ${CMAKE_BINARY_DIR}/$<CONFIG>
         RUNTIME_OUTPUT_DIRECTORY              ${CMAKE_BINARY_DIR}/$<CONFIG>
+        RUNTIME_OUTPUT_DIRECTORY_DEBUG        ${CMAKE_BINARY_DIR}/Debug
+        RUNTIME_OUTPUT_DIRECTORY_RELEASE      ${CMAKE_BINARY_DIR}/Release
+        RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO ${CMAKE_BINARY_DIR}/RelWithDebInfo
+        RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL   ${CMAKE_BINARY_DIR}/MinSizeRel
     )
 endif()
 
 # Static library for other Python utilities
 add_library(lfs_python_utils STATIC
     runner.cpp
+    python_buffer_analysis.cpp
     package_manager.cpp
     plugin_runner.cpp
     subprocess.cpp
@@ -134,11 +140,23 @@ target_link_libraries(lfs_python_utils
         Python::Python
         lfs_core
         lfs_python_runtime
+        lfs::tree_sitter
+        lfs::tree_sitter_python
 )
+
+set(LFS_PYTHON_UTILS_DEFINITIONS
+    LFS_PYTHON_EXECUTABLE="${Python_EXECUTABLE}"
+)
+if(LFS_DEV_IMPORT_SOURCE_PYTHON AND NOT BUILD_PORTABLE)
+    list(APPEND LFS_PYTHON_UTILS_DEFINITIONS
+        LFS_DEV_PYTHON_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+    )
+    message(STATUS "Python dev mode: built-in Python imports from ${CMAKE_CURRENT_SOURCE_DIR}")
+endif()
 
 target_compile_definitions(lfs_python_utils
     PUBLIC
-        LFS_PYTHON_EXECUTABLE="${Python_EXECUTABLE}"
+        ${LFS_PYTHON_UTILS_DEFINITIONS}
 )
 
 set_target_properties(lfs_python_utils PROPERTIES
@@ -207,9 +225,14 @@ set_target_properties(lfs_py PROPERTIES
     CUDA_SEPARABLE_COMPILATION OFF
     LINKER_LANGUAGE CXX
     POSITION_INDEPENDENT_CODE ON
+    CXX_VISIBILITY_PRESET hidden
+    VISIBILITY_INLINES_HIDDEN ON
     OUTPUT_NAME lichtfeld
 )
 
+# Do not add --exclude-libs,ALL here while lfs_visualizer is static on Linux.
+# The embedded app and the lichtfeld extension currently share GUI registries
+# and hook bridges through ELF symbol interposition.
 target_compile_definitions(lfs_py PRIVATE
     LFS_PYTHON_EXECUTABLE="${Python_EXECUTABLE}"
     $<$<CONFIG:Debug>:DEBUG_BUILD>
@@ -219,7 +242,7 @@ target_compile_definitions(lfs_py PRIVATE
 
 if(CMAKE_CXX_LINK_GROUP_USING_RESCAN_SUPPORTED)
     set(LFS_PY_INTERNAL_LINK_LIBS
-        "$<LINK_GROUP:RESCAN,lfs_core,lfs_event_bridge,lfs_geometry,lfs_visualizer,lfs_mcp,lfs_python_runtime,lfs_training,lfs_io,lfs_rendering,lfs_sequencer>"
+        "$<LINK_GROUP:RESCAN,lfs_core,lfs_event_bridge,lfs_geometry,lfs_visualizer,lfs_mcp,lfs_python_runtime,lfs_training,lfs_io,lfs_rendering_tensor,lfs_sequencer>"
     )
 else()
     set(LFS_PY_INTERNAL_LINK_LIBS
@@ -231,7 +254,7 @@ else()
         lfs_python_runtime
         lfs_training
         lfs_io
-        lfs_rendering
+        lfs_rendering_tensor
         lfs_sequencer
     )
 endif()
@@ -296,7 +319,7 @@ if(WIN32)
 
     # Copy vcpkg runtime DLLs
     add_custom_command(TARGET lfs_py POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_directory
+        COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
             "${CMAKE_BINARY_DIR}/vcpkg_installed/${VCPKG_TARGET_TRIPLET}/bin"
             "${CMAKE_CURRENT_BINARY_DIR}"
         COMMENT "Copying vcpkg DLLs to Python module directory"
@@ -481,11 +504,12 @@ endif()
 
 # Copy lfs_plugins Python module to build directory (recursively to include subdirectories)
 add_custom_target(lfs_plugins_copy ALL
-    COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_SOURCE_DIR}/lfs_plugins $<TARGET_FILE_DIR:lfs_py>/lfs_plugins
+    COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different ${CMAKE_CURRENT_SOURCE_DIR}/lfs_plugins $<TARGET_FILE_DIR:lfs_py>/lfs_plugins
     COMMENT "Copying lfs_plugins Python module"
 )
 
 add_custom_target(lfs_python_support_copy ALL
+    COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:lfs_py>
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         ${CMAKE_CURRENT_SOURCE_DIR}/_lfs_panel_contract.py
         ${CMAKE_CURRENT_SOURCE_DIR}/lfs_splat_lod_hierarchy.py

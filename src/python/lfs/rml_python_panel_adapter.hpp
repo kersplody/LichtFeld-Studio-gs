@@ -45,11 +45,13 @@ namespace lfs::vis::gui {
         bool wantsKeyboard() const override;
         bool needsAnimationFrame() const override;
         bool wantsExternalFloatingShadow() const override { return !foreground_; }
+        void reloadRmlResources() override;
         void setForeground(bool fg);
 
     private:
         enum class LifecycleState : uint8_t {
             AwaitingModelBind,
+            BindingModel,
             ModelBound,
             Mounted,
         };
@@ -62,6 +64,7 @@ namespace lfs::vis::gui {
         void callOnUnload(Rml::ElementDocument* doc);
         void callOnLoad(Rml::ElementDocument* doc);
         bool isModelBound() const;
+        bool isBindingModel() const;
         bool isMounted() const;
         void setLifecycleState(LifecycleState next_state);
         void resetLifecycle();

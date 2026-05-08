@@ -4,6 +4,9 @@
   <link type="text/rcss" href="histogram_panel.rcss"/>
 </head>
 <body template="docked-panel" data-model="histogram_panel">
+  <div class="dock-drag-handle" data-class-hidden="is_floating">
+    <div class="dock-drag-handle-bar"></div>
+  </div>
   <div id="histogram-shell" data-class-is-floating="is_floating">
     <div id="histogram-floating-header" class="hidden" data-class-hidden="!is_floating">
       <span id="histogram-floating-title">{{ panel_label }}</span>
@@ -175,11 +178,21 @@
           <span id="histogram-bin-count">{{ bin_count_text }}</span>
         </div>
 
+        <div id="histogram-range-of-interest">
+          <span class="range-of-interest-label">{{ range_of_interest_label }}</span>
+          <input id="range-min-input" type="text" class="number-input range-input" data-value="range_min_str" />
+          <span class="range-separator">–</span>
+          <input id="range-max-input" type="text" class="number-input range-input" data-value="range_max_str" />
+          <button class="btn btn--secondary range-reset"
+                  data-event-click="reset_range()"
+                  data-attrif-disabled="!has_custom_range">{{ reset_range_label }}</button>
+        </div>
+
         <div id="histogram-chart">
-          <div class="histogram-grid-line" style="top: 16%;"></div>
-          <div class="histogram-grid-line" style="top: 36%;"></div>
-          <div class="histogram-grid-line" style="top: 56%;"></div>
-          <div class="histogram-grid-line" style="top: 76%;"></div>
+          <div class="histogram-grid-line histogram-grid-line--top-16"></div>
+          <div class="histogram-grid-line histogram-grid-line--top-36"></div>
+          <div class="histogram-grid-line histogram-grid-line--top-56"></div>
+          <div class="histogram-grid-line histogram-grid-line--top-76"></div>
 
           <div id="histogram-bars" tab-index="0" data-style-gap="histogram_bar_gap_style">
             <div id="histogram-selection"
@@ -217,6 +230,21 @@
             <span id="compare-bin-count">{{ compare_bin_count_text }}</span>
           </div>
 
+          <div id="compare-range-of-interest">
+            <span class="range-of-interest-label">{{ range_of_interest_label }}</span>
+            <span class="compare-axis-marker">X</span>
+            <input id="compare-range-x-min-input" type="text" class="number-input range-input" data-value="range_min_str" />
+            <span class="range-separator">–</span>
+            <input id="compare-range-x-max-input" type="text" class="number-input range-input" data-value="range_max_str" />
+            <span class="compare-axis-marker">Y</span>
+            <input id="compare-range-y-min-input" type="text" class="number-input range-input" data-value="compare_y_range_min_str" />
+            <span class="range-separator">–</span>
+            <input id="compare-range-y-max-input" type="text" class="number-input range-input" data-value="compare_y_range_max_str" />
+            <button class="btn btn--secondary range-reset"
+                    data-event-click="reset_compare_range()"
+                    data-attrif-disabled="!compare_has_custom_range">{{ reset_range_label }}</button>
+          </div>
+
           <div id="compare-chart-shell">
             <div id="compare-y-axis">
               <span class="axis-metric">{{ compare_y_metric_label }}</span>
@@ -236,7 +264,6 @@
                        data-style-width="compare_selection_width_style"
                        data-style-height="compare_selection_height_style"></div>
                   <div class="compare-cell"
-                       style="left: 0%; top: 0%; width: 0%; height: 0%;"
                        data-for="bin : compare_bins"
                        data-class-selected="bin.selected"
                        data-attr-style="bin.style_attr"

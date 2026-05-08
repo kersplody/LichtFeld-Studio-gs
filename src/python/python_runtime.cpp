@@ -45,10 +45,10 @@ namespace lfs::python {
         // Exit popup state for window close callback (thread-safe)
         std::atomic<bool> g_exit_popup_open{false};
 
-        // GL-thread callback queue (set once during module init, before any reader threads)
-        std::thread::id g_gl_thread_id{};
-        std::mutex g_gl_callbacks_mutex;
-        std::vector<std::function<void()>> g_gl_callbacks;
+        // Graphics-thread callback queue (set once during module init, before any reader threads)
+        std::thread::id g_graphics_thread_id{};
+        std::mutex g_graphics_callbacks_mutex;
+        std::vector<std::function<void()>> g_graphics_callbacks;
 
         // Sequencer callbacks
         IsSequencerVisibleCallback g_is_sequencer_visible_cb = nullptr;
@@ -86,6 +86,9 @@ namespace lfs::python {
         // Transform space callbacks
         GetTransformSpaceCallback g_get_transform_space_cb = nullptr;
         SetTransformSpaceCallback g_set_transform_space_cb = nullptr;
+
+        // Asset Manager save callback
+        SaveAssetCallback g_save_asset_cb = nullptr;
 
         // Thumbnail callbacks
         RequestThumbnailCallback g_request_thumbnail_cb = nullptr;
@@ -519,6 +522,15 @@ namespace lfs::python {
             g_set_transform_space_cb(space);
     }
 
+    void set_save_asset_callback(SaveAssetCallback save_cb) {
+        g_save_asset_cb = save_cb;
+    }
+
+    void invoke_save_asset(const std::string& node_name) {
+        if (g_save_asset_cb)
+            g_save_asset_cb(node_name.c_str());
+    }
+
     void set_scene_manager(vis::SceneManager* sm) { g_scene_manager.store(sm); }
     vis::SceneManager* get_scene_manager() { return g_scene_manager.load(); }
 
@@ -621,20 +633,20 @@ namespace lfs::python {
         *user_data = g_imgui_alloc_user_data;
     }
 
-    void set_gl_texture_service(const CreateTextureFn create, const DeleteTextureFn del, const MaxTextureSizeFn max_size) {
+    void set_ui_texture_service(const CreateTextureFn create, const DeleteTextureFn del, const MaxTextureSizeFn max_size) {
         assert(create && del && max_size);
         g_create_texture = create;
         g_delete_texture = del;
         g_max_texture_size_fn = max_size;
     }
 
-    TextureResult create_gl_texture(const unsigned char* data, const int w, const int h, const int channels) {
+    TextureResult create_ui_texture(const unsigned char* data, const int w, const int h, const int channels) {
         if (!g_create_texture)
             return {0, w, h};
         return g_create_texture(data, w, h, channels);
     }
 
-    void delete_gl_texture(const uint32_t texture_id) {
+    void delete_ui_texture(const uint64_t texture_id) {
         if (!g_delete_texture || texture_id == 0)
             return;
         g_delete_texture(texture_id);
@@ -736,9 +748,9 @@ namespace lfs::python {
         }
     }
 
-    void shutdown_python_gl_resources() {
-        if (g_bridge.shutdown_gl_resources) {
-            g_bridge.shutdown_gl_resources();
+    void shutdown_python_ui_resources() {
+        if (g_bridge.shutdown_ui_resources) {
+            g_bridge.shutdown_ui_resources();
         }
     }
 
@@ -901,7 +913,9 @@ namespace lfs::python {
     void set_export_callback(ExportCallback cb) { g_export_callback = cb; }
 
     void invoke_export(int format, const std::string& path,
-                       const std::vector<std::string>& node_names, int sh_degree) {
+                       const std::vector<std::string>& node_names, int sh_degree,
+                       const std::vector<float>& rad_lod_ratios,
+                       bool rad_flip_y) {
         if (!g_export_callback)
             return;
 
@@ -911,7 +925,9 @@ namespace lfs::python {
             names_ptrs.push_back(name.c_str());
         }
         g_export_callback(format, path.c_str(), names_ptrs.data(),
-                          static_cast<int>(names_ptrs.size()), sh_degree);
+                          static_cast<int>(names_ptrs.size()), sh_degree,
+                          rad_lod_ratios.data(), static_cast<int>(rad_lod_ratios.size()),
+                          rad_flip_y);
     }
 
     bool has_python_toolbar() {
@@ -1031,23 +1047,23 @@ namespace lfs::python {
     bool is_exit_popup_open() { return g_exit_popup_open.load(); }
     void set_exit_popup_open(bool open) { g_exit_popup_open.store(open); }
 
-    void set_gl_thread_id(std::thread::id id) { g_gl_thread_id = id; }
+    void set_graphics_thread_id(std::thread::id id) { g_graphics_thread_id = id; }
 
-    bool on_gl_thread() {
-        return g_gl_thread_id != std::thread::id{} &&
-               std::this_thread::get_id() == g_gl_thread_id;
+    bool on_graphics_thread() {
+        return g_graphics_thread_id != std::thread::id{} &&
+               std::this_thread::get_id() == g_graphics_thread_id;
     }
 
-    void schedule_gl_callback(std::function<void()> fn) {
-        std::lock_guard lock(g_gl_callbacks_mutex);
-        g_gl_callbacks.push_back(std::move(fn));
+    void schedule_graphics_callback(std::function<void()> fn) {
+        std::lock_guard lock(g_graphics_callbacks_mutex);
+        g_graphics_callbacks.push_back(std::move(fn));
     }
 
-    void flush_gl_callbacks() {
+    void flush_graphics_callbacks() {
         std::vector<std::function<void()>> pending;
         {
-            std::lock_guard lock(g_gl_callbacks_mutex);
-            pending.swap(g_gl_callbacks);
+            std::lock_guard lock(g_graphics_callbacks_mutex);
+            pending.swap(g_graphics_callbacks);
         }
         for (auto& fn : pending)
             fn();
@@ -1188,10 +1204,11 @@ namespace lfs::python {
     void invoke_viewport_overlay(const float* view_matrix, const float* proj_matrix,
                                  const float* vp_pos, const float* vp_size,
                                  const float* cam_pos, const float* cam_fwd,
+                                 void* overlay_renderer,
                                  void* draw_list) {
         if (g_invoke_viewport_overlay_cb) {
             g_invoke_viewport_overlay_cb(view_matrix, proj_matrix, vp_pos, vp_size,
-                                         cam_pos, cam_fwd, draw_list);
+                                         cam_pos, cam_fwd, overlay_renderer, draw_list);
         }
     }
 

@@ -13,6 +13,7 @@
 #include "core/splat_data_transform.hpp"
 #include "geometry/bounding_box.hpp"
 #include "geometry/euclidean_transform.hpp"
+#include "gui/gui_manager.hpp"
 #include "io/cache_image_loader.hpp"
 #include "io/formats/colmap.hpp"
 #include "io/loader.hpp"
@@ -31,6 +32,8 @@
 #include "visualizer/gui_capabilities.hpp"
 #include "visualizer/rendering/model_renderability.hpp"
 #include "visualizer/scene_coordinate_utils.hpp"
+#include "window/vulkan_context.hpp"
+#include "window/window_manager.hpp"
 #include <algorithm>
 #include <format>
 #include <glm/gtc/quaternion.hpp>
@@ -474,7 +477,7 @@ namespace lfs::vis {
             auto loader = lfs::io::Loader::create();
             lfs::io::LoadOptions options{
                 .resize_factor = -1,
-                .max_width = 3840,
+                .max_width = 0,
                 .images_folder = "images",
                 .validate_only = false};
 
@@ -500,12 +503,13 @@ namespace lfs::vis {
             if (mesh_data && *mesh_data) {
                 LOG_INFO("Adding mesh '{}' ({} vertices, {} faces)", name,
                          (*mesh_data)->vertex_count(), (*mesh_data)->face_count());
-                scene_.addMesh(name, *mesh_data);
+                scene_.addMesh(name, *mesh_data, core::NULL_NODE);
 
                 {
                     std::lock_guard<std::mutex> lock(state_mutex_);
                     content_type_ = ContentType::SplatFiles;
                     splat_paths_.clear();
+                    splat_paths_[name] = path;
                 }
 
                 state::SceneLoaded{
@@ -565,7 +569,7 @@ namespace lfs::vis {
                     .is_visible = true,
                     .parent_name = "",
                     .is_group = false,
-                    .node_type = 0}
+                    .node_type = static_cast<int>(core::NodeType::SPLAT)}
                     .emit();
 
                 const auto* splat_for_cropbox = scene_.getNode(name);
@@ -582,7 +586,7 @@ namespace lfs::vis {
                                 .is_visible = true,
                                 .parent_name = name,
                                 .is_group = false,
-                                .node_type = 2}
+                                .node_type = static_cast<int>(core::NodeType::CROPBOX)}
                                 .emit();
                         }
                     }
@@ -592,6 +596,7 @@ namespace lfs::vis {
                     scene_.getCropBoxForSplat(splat_for_cropbox->id) != core::NULL_NODE) {
                     updateCropBoxToFitScene(true);
                 }
+
                 selectNode(name);
 
                 // Check for companion PPISP file
@@ -677,7 +682,7 @@ namespace lfs::vis {
             auto loader = lfs::io::Loader::create();
             const lfs::io::LoadOptions options{
                 .resize_factor = -1,
-                .max_width = 3840,
+                .max_width = 0,
                 .images_folder = "images",
                 .validate_only = false};
 
@@ -695,7 +700,11 @@ namespace lfs::vis {
 
             auto* mesh_data = std::get_if<std::shared_ptr<lfs::core::MeshData>>(&load_result->data);
             if (mesh_data && *mesh_data) {
-                scene_.addMesh(name, *mesh_data);
+                scene_.addMesh(name, *mesh_data, core::NULL_NODE);
+                {
+                    std::lock_guard<std::mutex> lock(state_mutex_);
+                    splat_paths_[name] = path;
+                }
 
                 state::PLYAdded{
                     .name = name,
@@ -734,7 +743,7 @@ namespace lfs::vis {
                 .is_visible = is_visible,
                 .parent_name = "",
                 .is_group = false,
-                .node_type = 0}
+                .node_type = static_cast<int>(core::NodeType::SPLAT)}
                 .emit();
 
             selectNode(name);
@@ -768,6 +777,19 @@ namespace lfs::vis {
         selection_.clearNodeSelection();
         selection_.invalidateNodeMask();
         clearAppearanceModel();
+        // Scene clear can fire from a synchronous menu callback inside the current
+        // GUI render iteration. Drop the GUI's tensor pointer and drain the GPU
+        // before scene_.clear() frees the backing memory — otherwise this same
+        // iteration's prepareVulkanSceneInterop dispatches a CUDA copy from
+        // freed memory and the device faults asynchronously.
+        if (auto* const gui_mgr = services().guiOrNull()) {
+            gui_mgr->setVulkanSceneImage(nullptr, glm::ivec2(0, 0), false, 0);
+        }
+        if (auto* const window_mgr = services().windowOrNull()) {
+            if (auto* const vulkan_ctx = window_mgr->getVulkanContext()) {
+                (void)vulkan_ctx->deviceWaitIdle();
+            }
+        }
         scene_.clear();
         python::set_application_scene(&scene_);
 
@@ -1507,7 +1529,7 @@ namespace lfs::vis {
         transform[3][1] = translation.y;
         transform[3][2] = translation.z;
 
-        scene_.setNodeTransform(node_name, transform);
+        setNodeTransform(node_name, transform);
     }
 
     glm::vec3 SceneManager::getSelectedNodeTranslation() const {
@@ -1573,7 +1595,7 @@ namespace lfs::vis {
 
         LOG_DEBUG("setSelectedNodeTransform '{}': pos=[{:.2f}, {:.2f}, {:.2f}]",
                   node_name, transform[3][0], transform[3][1], transform[3][2]);
-        scene_.setNodeTransform(node_name, transform);
+        setNodeTransform(node_name, transform);
     }
 
     glm::mat4 SceneManager::getSelectedNodeTransform() const {
@@ -2217,6 +2239,8 @@ namespace lfs::vis {
             cached_params_ = checkpoint_params;
 
             // === Phase 3: Load data ===
+            // Clear init_path to prevent loading the initial PLY again - we use the checkpoint model instead
+            checkpoint_params.init_path = std::nullopt;
             const auto load_result = lfs::training::loadTrainingDataIntoScene(checkpoint_params, scene_);
             if (!load_result) {
                 throw std::runtime_error("Failed to load training data: " + load_result.error());
@@ -2423,9 +2447,17 @@ namespace lfs::vis {
         // Get node visibility mask (for consolidated models)
         state.node_visibility_mask = scene_.getNodeVisibilityMask();
 
-        // Get selection mask
-        state.selection_mask = scene_.getSelectionMask();
-        state.has_selection = scene_.hasSelection();
+        // Renderers consume masks in visible-model order. Scene selection state remains full-scene
+        // so hidden-node selections survive visibility toggles.
+        state.selection_mask = scene_.getVisibleSelectionMask();
+        const size_t render_splat_count = state.combined_model
+                                              ? static_cast<size_t>(state.combined_model->size())
+                                              : scene_.getTotalGaussianCount();
+        if (state.selection_mask && state.selection_mask->is_valid() &&
+            state.selection_mask->numel() != render_splat_count) {
+            state.selection_mask.reset();
+        }
+        state.has_selection = state.selection_mask && state.selection_mask->is_valid();
 
         // Get cropboxes (before lock — no selection dependency)
         state.cropboxes = scene_.getVisibleCropBoxes();
@@ -3519,7 +3551,7 @@ namespace lfs::vis {
         if (!combined || combined->size() == 0)
             return false;
 
-        const auto mask = scene_.getSelectionMask();
+        const auto mask = scene_.getVisibleSelectionMask();
         if (!mask || !mask->is_valid())
             return false;
 
@@ -3864,7 +3896,7 @@ namespace lfs::vis {
             return;
         }
 
-        const size_t total = scene_.getTotalGaussianCount();
+        const size_t total = scene_.getSelectionGaussianCount();
         if (total == 0)
             return;
 
@@ -3875,7 +3907,7 @@ namespace lfs::vis {
         const auto old_mask = scene_.getSelectionMask();
 
         lfs::core::Tensor new_mask;
-        if (old_mask && old_mask->is_valid()) {
+        if (old_mask && old_mask->is_valid() && old_mask->numel() == total) {
             // Scene selection masks store selection group ids (uint8). Invert only the active group while
             // preserving membership in other groups.
             //
@@ -3935,8 +3967,10 @@ namespace lfs::vis {
         }
 
         if (is_selection_tool) {
-            const size_t total = scene_.getTotalGaussianCount();
-            if (total == 0)
+            const auto* const model = getModelForRendering();
+            const size_t visible_total = model ? static_cast<size_t>(model->size()) : scene_.getTotalGaussianCount();
+            const size_t full_total = scene_.getSelectionGaussianCount();
+            if (visible_total == 0 || full_total == 0)
                 return;
 
             const auto& selected_name = getSelectedNodeName();
@@ -3948,13 +3982,31 @@ namespace lfs::vis {
                 return;
 
             const auto transform_indices = scene_.getTransformIndices();
-            if (!transform_indices || transform_indices->numel() != total)
+            if (!transform_indices || transform_indices->numel() != visible_total)
                 return;
 
             auto entry = std::make_unique<op::SceneSnapshot>(*this, "select.all");
             entry->captureSelection();
 
-            auto new_mask = std::make_shared<lfs::core::Tensor>(transform_indices->eq(node_index));
+            const auto group_id = scene_.getActiveSelectionGroup() != 0 ? scene_.getActiveSelectionGroup() : 1;
+            const auto visible_bool = transform_indices->eq(node_index);
+            const auto visible_values = visible_bool.to(lfs::core::DataType::UInt8) *
+                                        lfs::core::Tensor::full(
+                                            {visible_total}, static_cast<float>(group_id),
+                                            lfs::core::Device::CUDA, lfs::core::DataType::UInt8);
+            lfs::core::Tensor full_mask;
+            const auto visible_indices = scene_.getVisibleSelectionIndices();
+            if (visible_values.numel() == full_total && !visible_indices) {
+                full_mask = visible_values;
+            } else if (visible_indices && visible_indices->is_valid() &&
+                       visible_indices->numel() == visible_values.numel()) {
+                full_mask = lfs::core::Tensor::zeros(
+                    {full_total}, lfs::core::Device::CUDA, lfs::core::DataType::UInt8);
+                full_mask.index_copy_(0, *visible_indices, visible_values);
+            } else {
+                return;
+            }
+            auto new_mask = std::make_shared<lfs::core::Tensor>(std::move(full_mask));
             scene_.setSelectionMask(new_mask);
 
             entry->captureAfter();
@@ -4087,6 +4139,42 @@ namespace lfs::vis {
             return {false, 0, "Selection service not initialized"};
 
         return selection_service_->applyMask(mask, SelectionMode::Replace);
+    }
+
+    void SceneManager::beginSelectionPreview() {
+        if (selection_preview_snapshot_)
+            return;
+
+        selection_preview_before_ = scene_.captureSelectionState();
+        selection_preview_snapshot_ = std::make_unique<op::SceneSnapshot>(*this, "selection.histogram");
+        selection_preview_snapshot_->captureSelection();
+    }
+
+    SelectionResult SceneManager::previewSelectionMask(const lfs::core::Tensor& mask) {
+        if (!selection_service_)
+            return {false, 0, "Selection service not initialized"};
+
+        beginSelectionPreview();
+        return selection_service_->previewMask(mask, SelectionMode::Replace);
+    }
+
+    void SceneManager::commitSelectionPreview() {
+        if (!selection_preview_snapshot_)
+            return;
+
+        selection_preview_snapshot_->captureAfter();
+        op::pushSceneSnapshotIfChanged(std::move(selection_preview_snapshot_));
+        selection_preview_before_.reset();
+    }
+
+    void SceneManager::cancelSelectionPreview() {
+        if (selection_preview_before_) {
+            scene_.restoreSelectionState(*selection_preview_before_);
+            if (auto* rm = services().renderingOrNull())
+                rm->markDirty(DirtyFlag::SELECTION);
+        }
+        selection_preview_snapshot_.reset();
+        selection_preview_before_.reset();
     }
 
 } // namespace lfs::vis

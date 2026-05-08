@@ -2,11 +2,6 @@
  *
  * SPDX-License-Identifier: GPL-3.0-or-later */
 
-// glad must be included before OpenGL headers
-// clang-format off
-#include <glad/glad.h>
-// clang-format on
-
 #include "gui/sequencer_ui_manager.hpp"
 #include "core/event_bridge/localization_manager.hpp"
 #include "core/events.hpp"
@@ -15,7 +10,9 @@
 #include "gui/gui_focus_state.hpp"
 #include "gui/panel_input_utils.hpp"
 #include "gui/rml_sequencer_overlay.hpp"
+#include "gui/rotation_gizmo.hpp"
 #include "gui/string_keys.hpp"
+#include "gui/translation_gizmo.hpp"
 #include "gui/utils/native_file_dialog.hpp"
 #include "io/video/video_export_options.hpp"
 #include "rendering/coordinate_conventions.hpp"
@@ -31,11 +28,8 @@
 #include <algorithm>
 #include <cmath>
 #include <format>
-#include <glm/gtc/type_ptr.hpp>
 #include <string_view>
 #include <vector>
-#include <imgui.h>
-#include <ImGuizmo.h>
 
 namespace lfs::vis::gui {
 
@@ -56,17 +50,23 @@ namespace lfs::vis::gui {
 
     SequencerUIManager::~SequencerUIManager() = default;
 
-    void SequencerUIManager::destroyGLResources() {
+    void SequencerUIManager::destroyGraphicsResources() {
         if (panel_)
-            panel_->destroyGLResources();
+            panel_->destroyGraphicsResources();
         if (overlay_)
-            overlay_->destroyGLResources();
-        pip_fbo_ = {};
-        pip_texture_ = {};
-        pip_depth_rbo_ = {};
+            overlay_->destroyGraphicsResources();
+        pip_texture_.reset();
         pip_initialized_ = false;
-        line_renderer_.destroyGLResources();
-        film_strip_.destroyGLResources();
+        line_renderer_.destroyResources();
+        film_strip_.destroyGraphicsResources();
+    }
+
+    void SequencerUIManager::reloadRmlResources() {
+        if (panel_)
+            panel_->reloadResources();
+        if (overlay_)
+            overlay_->reloadResources();
+        pip_needs_update_ = true;
     }
 
     void SequencerUIManager::setSequencerEnabled(const bool enabled) {
@@ -138,22 +138,32 @@ namespace lfs::vis::gui {
 
         cmd::SequencerAddKeyframe::when([this](const auto&) {
             const auto& cam = viewer_->getViewport().camera;
-
-            const float interval = ui_state_.snap_to_grid ? ui_state_.snap_interval : 1.0f;
-            const float time = controller_.timeline().realKeyframeCount() == 0
-                                   ? 0.0f
-                                   : controller_.timeline().realEndTime() + interval;
+            const float time = controller_.playhead();
+            const glm::vec3 position = cam.t;
+            const glm::quat rotation = glm::quat_cast(cam.R);
 
             auto* const rm = viewer_->getRenderingManager();
             const float focal_mm = rm ? rm->getFocalLengthMm() : lfs::rendering::DEFAULT_FOCAL_LENGTH_MM;
 
-            lfs::sequencer::Keyframe kf;
-            kf.time = time;
-            kf.position = cam.t;
-            kf.rotation = glm::quat_cast(cam.R);
-            kf.focal_length_mm = focal_mm;
-            controller_.addKeyframeAtTime(kf, time);
-            controller_.seek(time);
+            // Match Blender / After Effects / Maya: clicking + at a time that already has a
+            // keyframe overwrites that keyframe with the current pose instead of stacking.
+            constexpr float REPLACE_EPSILON_S = 0.01f;
+            const auto& keyframes = controller_.timeline().keyframes();
+            const auto existing = std::find_if(keyframes.begin(), keyframes.end(),
+                                               [time](const lfs::sequencer::Keyframe& kf) {
+                                                   return !kf.is_loop_point &&
+                                                          std::abs(kf.time - time) < REPLACE_EPSILON_S;
+                                               });
+            if (existing != keyframes.end()) {
+                controller_.updateKeyframeById(existing->id, position, rotation, focal_mm);
+            } else {
+                lfs::sequencer::Keyframe kf;
+                kf.time = time;
+                kf.position = position;
+                kf.rotation = rotation;
+                kf.focal_length_mm = focal_mm;
+                controller_.addKeyframeAtTime(kf, time);
+            }
             state::KeyframeListChanged{.count = controller_.timeline().realKeyframeCount()}.emit();
         });
 
@@ -191,6 +201,17 @@ namespace lfs::vis::gui {
 
         state::KeyframeListChanged::when([this](const auto&) {
             film_strip_.invalidateAll();
+        });
+
+        // File → New Project (and any dataset swap) emits SceneCleared. Drop the camera path
+        // and film-strip thumbs by wiping the timeline; the keyframes belong to the old scene.
+        state::SceneCleared::when([this](const auto&) {
+            if (controller_.timeline().realKeyframeCount() == 0 &&
+                !controller_.timeline().hasAnimationClip())
+                return;
+            controller_.clear();
+            film_strip_.invalidateAll();
+            state::KeyframeListChanged{.count = 0}.emit();
         });
 
         ui::NodeSelected::when([this](const auto& e) {
@@ -269,7 +290,7 @@ namespace lfs::vis::gui {
             guiFocusState().want_capture_mouse = true;
 
         const bool actively_following =
-            ui_state_.follow_playback && controller_.isPlaying() &&
+            ui_state_.follow_playback &&
             controller_.timeline().realKeyframeCount() > 0;
 
         if (ui_state_.show_camera_path && !actively_following) {
@@ -319,7 +340,10 @@ namespace lfs::vis::gui {
 
         if (auto* const rm = viewer_->getRenderingManager()) {
             rm->setOverlayAnimationActive(is_playing);
-            if (is_playing && ui_state_.follow_playback && !ui_state_.show_pip_preview) {
+            // Follow whenever the toggle is on — playing, scrubbing, or paused.
+            // The user wants the main viewport to track the playhead at all times,
+            // not only during automatic playback.
+            if (ui_state_.follow_playback && controller_.timeline().realKeyframeCount() > 0) {
                 rm->markDirty(DirtyFlag::CAMERA);
                 const auto state = controller_.currentCameraState();
                 auto& vp = viewer_->getViewport();
@@ -885,7 +909,9 @@ namespace lfs::vis::gui {
         if (mouse_panel && !mouse_blocked_by_ui && hovered_keyframe.has_value()) {
             const auto* const hovered = timeline.getKeyframe(*hovered_keyframe);
             if (hovered && !hovered->is_loop_point) {
-                if (input.mouse_clicked[0] && !ImGuizmo::IsOver()) {
+                if (input.mouse_clicked[0] &&
+                    !isRotationGizmoHovered() &&
+                    !isTranslationGizmoHovered()) {
                     beginViewportKeyframeEdit(*hovered_keyframe);
                     guiFocusState().want_capture_mouse = true;
                 }
@@ -975,33 +1001,70 @@ namespace lfs::vis::gui {
         glm::mat4 gizmo_matrix(rot_mat);
         gizmo_matrix[3] = glm::vec4(kf->position, 1.0f);
 
-        const ImGuizmo::OPERATION op =
-            viewport_edit_mode_ == SequencerViewportEditMode::Rotate
-                ? ImGuizmo::ROTATE
-                : ImGuizmo::TRANSLATE;
+        const bool rotate_mode = viewport_edit_mode_ == SequencerViewportEditMode::Rotate;
 
-        ImGuizmo::SetOrthographic(settings.orthographic);
-        ImGuizmo::SetRect(rect_pos.x, rect_pos.y, rect_size.x, rect_size.y);
+        NativeOverlayDrawList draw_list;
+        const glm::vec2 clip_min(rect_pos.x, rect_pos.y);
+        const glm::vec2 clip_max(rect_pos.x + rect_size.x, rect_pos.y + rect_size.y);
+        draw_list.PushClipRect(clip_min, clip_max, true);
+        const auto& frame_input = viewer_->getWindowManager()->frameInput();
+        const NativeGizmoInput gizmo_input{
+            .mouse_pos = {frame_input.mouse_x, frame_input.mouse_y},
+            .mouse_left_down = frame_input.mouse_down[0],
+            .mouse_left_clicked = frame_input.mouse_clicked[0],
+        };
+        const bool snap_modifier = (frame_input.key_mods & SDL_KMOD_CTRL) != 0;
 
-        ImDrawList* const draw_list = ImGui::GetForegroundDrawList();
-        const ImVec2 clip_min(rect_pos.x, rect_pos.y);
-        const ImVec2 clip_max(rect_pos.x + rect_size.x, rect_pos.y + rect_size.y);
-        draw_list->PushClipRect(clip_min, clip_max, true);
-        ImGuizmo::SetDrawlist(draw_list);
+        bool changed = false;
+        bool is_using = false;
+        glm::mat3 rotation_delta(1.0f);
 
-        glm::mat4 delta(1.0f);
-        const ImGuizmo::MODE mode = op == ImGuizmo::ROTATE ? ImGuizmo::LOCAL : ImGuizmo::WORLD;
-        const bool changed = ImGuizmo::Manipulate(
-            glm::value_ptr(view),
-            glm::value_ptr(projection),
-            op,
-            mode,
-            glm::value_ptr(gizmo_matrix),
-            glm::value_ptr(delta),
-            nullptr);
+        if (rotate_mode) {
+            RotationGizmoConfig rotation_config;
+            rotation_config.id = 4000;
+            rotation_config.viewport_pos = rect_pos;
+            rotation_config.viewport_size = rect_size;
+            rotation_config.view = view;
+            rotation_config.projection = projection;
+            rotation_config.pivot_world = kf->position;
+            rotation_config.orientation_world = rot_mat;
+            rotation_config.draw_list = &draw_list;
+            rotation_config.input = gizmo_input;
+            rotation_config.snap = snap_modifier;
+            rotation_config.snap_degrees = 5.0f;
 
-        const bool is_using = ImGuizmo::IsUsing();
-        if (ImGuizmo::IsOver() || is_using)
+            const auto rotation_result = drawRotationGizmo(rotation_config);
+            changed = rotation_result.changed;
+            is_using = rotation_result.active;
+            rotation_delta = rotation_result.delta_rotation;
+            if (rotation_result.hovered || rotation_result.active)
+                guiFocusState().want_capture_mouse = true;
+        } else {
+            TranslationGizmoConfig translation_config;
+            translation_config.id = 4000;
+            translation_config.viewport_pos = rect_pos;
+            translation_config.viewport_size = rect_size;
+            translation_config.view = view;
+            translation_config.projection = projection;
+            translation_config.pivot_world = kf->position;
+            translation_config.orientation_world = glm::mat3(1.0f);
+            translation_config.draw_list = &draw_list;
+            translation_config.input = gizmo_input;
+            translation_config.snap = snap_modifier;
+            translation_config.snap_units = 0.1f;
+
+            const auto translation_result = drawTranslationGizmo(translation_config);
+            changed = translation_result.changed;
+            is_using = translation_result.active;
+            if (translation_result.active) {
+                const glm::vec3 translated_position = kf->position + translation_result.delta_translation;
+                gizmo_matrix[3] = glm::vec4(translated_position, 1.0f);
+            }
+            if (translation_result.hovered || translation_result.active)
+                guiFocusState().want_capture_mouse = true;
+        }
+
+        if (is_using)
             guiFocusState().want_capture_mouse = true;
 
         if (is_using && !keyframe_gizmo_active_)
@@ -1009,7 +1072,9 @@ namespace lfs::vis::gui {
 
         if (changed) {
             const glm::vec3 new_pos(gizmo_matrix[3]);
-            const glm::quat new_rot = glm::normalize(glm::quat_cast(glm::mat3(gizmo_matrix)));
+            const glm::quat new_rot = rotate_mode
+                                          ? glm::normalize(glm::quat_cast(rotation_delta * rot_mat))
+                                          : glm::normalize(glm::quat_cast(glm::mat3(gizmo_matrix)));
             if (controller_.updateKeyframeById(
                     *selected_id,
                     new_pos,
@@ -1027,7 +1092,7 @@ namespace lfs::vis::gui {
                 .emit();
         }
 
-        draw_list->PopClipRect();
+        draw_list.PopClipRect();
     }
 
     void SequencerUIManager::handleOverlayActions() {
@@ -1155,37 +1220,6 @@ namespace lfs::vis::gui {
     }
 
     void SequencerUIManager::initPipPreview() {
-        if (pip_initialized_ || pip_init_failed_)
-            return;
-
-        glGenFramebuffers(1, pip_fbo_.ptr());
-        glGenTextures(1, pip_texture_.ptr());
-        glGenRenderbuffers(1, pip_depth_rbo_.ptr());
-
-        glBindTexture(GL_TEXTURE_2D, pip_texture_.get());
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, PREVIEW_WIDTH, PREVIEW_HEIGHT, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        glBindTexture(GL_TEXTURE_2D, 0);
-
-        glBindRenderbuffer(GL_RENDERBUFFER, pip_depth_rbo_.get());
-        glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, PREVIEW_WIDTH, PREVIEW_HEIGHT);
-        glBindRenderbuffer(GL_RENDERBUFFER, 0);
-
-        glBindFramebuffer(GL_FRAMEBUFFER, pip_fbo_.get());
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, pip_texture_.get(), 0);
-        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, pip_depth_rbo_.get());
-
-        if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
-            LOG_ERROR("PiP preview FBO incomplete");
-            glBindFramebuffer(GL_FRAMEBUFFER, 0);
-            pip_init_failed_ = true;
-            return;
-        }
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
-
         pip_initialized_ = true;
     }
 
@@ -1252,8 +1286,10 @@ namespace lfs::vis::gui {
             }
         }
 
-        if (rm->renderPreviewTexture(sm, cam_rot, cam_pos, cam_focal_length_mm,
-                                     pip_texture_, PREVIEW_WIDTH, PREVIEW_HEIGHT)) {
+        const auto image = rm->renderPreviewImage(sm, cam_rot, cam_pos, cam_focal_length_mm,
+                                                  PREVIEW_WIDTH, PREVIEW_HEIGHT);
+        // Rasterizer output uses OpenGL (bottom-left) origin; RmlUi samples top-left, so flip on upload.
+        if (image && pip_texture_.upload(*image, PREVIEW_WIDTH, PREVIEW_HEIGHT, /*flip_y=*/true)) {
             pip_last_render_time_ = now;
             if (!is_playing) {
                 pip_last_keyframe_ = selected;
@@ -1274,7 +1310,7 @@ namespace lfs::vis::gui {
         const bool is_playing = !controller_.isStopped();
         const auto selected = controller_.selectedKeyframe();
 
-        if (!pip_initialized_ || pip_texture_ == 0) {
+        if (!pip_initialized_ || !pip_texture_.valid()) {
             overlay_->hidePreviewWindow();
             return;
         }
@@ -1313,7 +1349,8 @@ namespace lfs::vis::gui {
                                         }();
 
         overlay_->showPreviewWindow(left, top, scaled_width, scaled_height,
-                                    title, is_playing, pip_texture_.get());
+                                    title, is_playing,
+                                    pip_texture_.rmlSrcUrl(PREVIEW_WIDTH, PREVIEW_HEIGHT));
     }
 
     void SequencerUIManager::renderKeyframeEditOverlay(const ViewportLayout& viewport) {

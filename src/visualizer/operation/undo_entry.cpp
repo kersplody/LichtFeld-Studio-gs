@@ -366,13 +366,30 @@ namespace lfs::vis::op {
             return (tensor && tensor->is_valid()) ? tensor->numel() : 0;
         }
 
+        lfs::core::Tensor normalizeMaskTensor(lfs::core::Tensor tensor,
+                                              const size_t total_size,
+                                              const lfs::core::Device device,
+                                              const lfs::core::DataType dtype) {
+            auto normalized_dtype = tensor.dtype() == dtype ? tensor : tensor.to(dtype);
+            if (normalized_dtype.numel() == total_size) {
+                return normalized_dtype;
+            }
+
+            auto normalized = lfs::core::Tensor::zeros({total_size}, device, dtype);
+            const size_t copy_count = std::min(total_size, normalized_dtype.numel());
+            if (copy_count > 0 && normalized_dtype.ndim() == 1) {
+                normalized.slice(0, 0, copy_count) = normalized_dtype.slice(0, 0, copy_count);
+            }
+            return normalized;
+        }
+
         lfs::core::Tensor materializeMaskTensor(const std::shared_ptr<lfs::core::Tensor>& tensor,
                                                 const size_t total_size,
                                                 const lfs::core::Device device,
                                                 const lfs::core::DataType dtype) {
             if (tensor && tensor->is_valid()) {
                 auto materialized = tensor->device() == device ? *tensor : tensor->to(device);
-                return materialized.dtype() == dtype ? materialized : materialized.to(dtype);
+                return normalizeMaskTensor(std::move(materialized), total_size, device, dtype);
             }
             return total_size > 0 ? lfs::core::Tensor::zeros({total_size}, device, dtype) : lfs::core::Tensor{};
         }
@@ -383,7 +400,7 @@ namespace lfs::vis::op {
                                                 const lfs::core::DataType dtype) {
             if (tensor && tensor->is_valid()) {
                 auto materialized = tensor->device() == device ? *tensor : tensor->to(device);
-                return materialized.dtype() == dtype ? materialized : materialized.to(dtype);
+                return normalizeMaskTensor(std::move(materialized), total_size, device, dtype);
             }
             return total_size > 0 ? lfs::core::Tensor::zeros({total_size}, device, dtype) : lfs::core::Tensor{};
         }
@@ -684,6 +701,7 @@ namespace lfs::vis::op {
             snapshot.image_name = camera.image_name();
             snapshot.image_path = camera.image_path();
             snapshot.mask_path = camera.mask_path();
+            snapshot.split = camera.split();
             snapshot.focal_x = camera.focal_x();
             snapshot.focal_y = camera.focal_y();
             snapshot.center_x = camera.center_x();
@@ -715,6 +733,7 @@ namespace lfs::vis::op {
                 snapshot.camera_height,
                 snapshot.uid,
                 snapshot.camera_id);
+            camera->set_split(snapshot.split);
             camera->set_image_dimensions(snapshot.image_width, snapshot.image_height);
             return camera;
         }

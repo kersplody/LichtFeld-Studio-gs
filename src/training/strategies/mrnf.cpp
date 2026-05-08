@@ -19,6 +19,7 @@
 #include <chrono>
 #include <climits>
 #include <cmath>
+#include <cstdint>
 #include <cstdlib>
 #include <numeric>
 #include <random>
@@ -303,44 +304,79 @@ namespace lfs::training {
         }
 
         struct CannyWorkspace {
-            lfs::core::Tensor grayscale;
-            lfs::core::Tensor blurred;
-            lfs::core::Tensor magnitude;
-            lfs::core::Tensor angle;
             lfs::core::Tensor nms_output;
         };
 
         [[nodiscard]] CannyWorkspace create_canny_workspace(const int height, const int width) {
-            const size_t hw = static_cast<size_t>(height) * static_cast<size_t>(width);
             const auto dev = lfs::core::Device::CUDA;
             const auto dt = lfs::core::DataType::Float32;
             return {
-                lfs::core::Tensor::zeros({hw}, dev, dt),
-                lfs::core::Tensor::zeros({hw}, dev, dt),
-                lfs::core::Tensor::zeros({hw}, dev, dt),
-                lfs::core::Tensor::zeros({hw}, dev, dt),
                 lfs::core::Tensor::zeros({static_cast<size_t>(height), static_cast<size_t>(width)}, dev, dt)};
         }
 
+        void ensure_canny_workspace(lfs::core::Tensor& nms_output, const int height, const int width) {
+            if (!nms_output.is_valid() ||
+                nms_output.ndim() != 2 ||
+                height != static_cast<int>(nms_output.shape()[0]) ||
+                width != static_cast<int>(nms_output.shape()[1])) {
+                nms_output = lfs::core::Tensor::zeros(
+                    {static_cast<size_t>(height), static_cast<size_t>(width)},
+                    lfs::core::Device::CUDA,
+                    lfs::core::DataType::Float32);
+            }
+        }
+
         void apply_canny_filter(const lfs::core::Tensor& input_data, CannyWorkspace& ws) {
-            assert(input_data.dtype() == lfs::core::DataType::Float32);
+            assert(input_data.dtype() == lfs::core::DataType::Float32 ||
+                   input_data.dtype() == lfs::core::DataType::UInt8);
             assert(input_data.device() == lfs::core::Device::CUDA);
             assert(input_data.ndim() == 3);
+            assert(input_data.shape()[0] >= 3);
 
             const int width = static_cast<int>(input_data.shape()[2]);
             const int height = static_cast<int>(input_data.shape()[1]);
 
-            ws.grayscale.zero_();
-            ws.blurred.zero_();
-            ws.magnitude.zero_();
-            ws.angle.zero_();
-            ws.nms_output.zero_();
-
             auto input_contig = input_data.contiguous();
-            kernels::launch_grayscale_filter(input_contig.ptr<float>(), ws.grayscale.ptr<float>(), height, width);
-            kernels::launch_gausssian_blur(ws.grayscale.ptr<float>(), ws.blurred.ptr<float>(), 3, height, width);
-            kernels::launch_sobel_gradient_filter(ws.blurred.ptr<float>(), ws.magnitude.ptr<float>(), ws.angle.ptr<float>(), height, width);
-            kernels::launch_nms_kernel(ws.magnitude.ptr<float>(), ws.angle.ptr<float>(), ws.nms_output.ptr<float>(), height, width);
+            if (input_contig.dtype() == lfs::core::DataType::UInt8) {
+                kernels::launch_fused_canny_edge_filter_chw(
+                    input_contig.ptr<uint8_t>(),
+                    ws.nms_output.ptr<float>(),
+                    height,
+                    width);
+            } else {
+                kernels::launch_fused_canny_edge_filter_chw(
+                    input_contig.ptr<float>(),
+                    ws.nms_output.ptr<float>(),
+                    height,
+                    width);
+            }
+        }
+
+        void apply_canny_filter(const lfs::core::Tensor& input_data, lfs::core::Tensor& nms_output) {
+            assert(input_data.dtype() == lfs::core::DataType::Float32 ||
+                   input_data.dtype() == lfs::core::DataType::UInt8);
+            assert(input_data.device() == lfs::core::Device::CUDA);
+            assert(input_data.ndim() == 3);
+            assert(input_data.shape()[0] >= 3);
+
+            const int width = static_cast<int>(input_data.shape()[2]);
+            const int height = static_cast<int>(input_data.shape()[1]);
+
+            ensure_canny_workspace(nms_output, height, width);
+            auto input_contig = input_data.contiguous();
+            if (input_contig.dtype() == lfs::core::DataType::UInt8) {
+                kernels::launch_fused_canny_edge_filter_chw(
+                    input_contig.ptr<uint8_t>(),
+                    nms_output.ptr<float>(),
+                    height,
+                    width);
+            } else {
+                kernels::launch_fused_canny_edge_filter_chw(
+                    input_contig.ptr<float>(),
+                    nms_output.ptr<float>(),
+                    height,
+                    width);
+            }
         }
 
         void normalize_by_positive_median_inplace(lfs::core::Tensor& tensor) {
@@ -351,8 +387,15 @@ namespace lfs::training {
                 return;
             }
             auto [sorted, _] = valid.sort();
-            const float median = sorted[valid.numel() / 2].item_as<float>();
-            tensor.div_(std::max(median, 1e-9f));
+            if (tensor.device() == lfs::core::Device::CUDA) {
+                kernels::launch_normalize_by_device_scalar(
+                    tensor.ptr<float>(),
+                    tensor.numel(),
+                    sorted.ptr<float>() + valid.numel() / 2);
+            } else {
+                const float median = sorted[valid.numel() / 2].item_as<float>();
+                tensor.div_(std::max(median, 1e-9f));
+            }
         }
 
         [[nodiscard]] lfs::core::Tensor normalized_by_positive_median(const lfs::core::Tensor& tensor) {
@@ -425,22 +468,35 @@ namespace lfs::training {
         LOG_INFO("MRNF strategy initialized with {} Gaussians", n);
     }
 
-    void MRNF::pre_step(int iter, RenderOutput& /*render_output*/) {
+    void MRNF::pre_step(int iter, RenderOutput& render_output) {
         _precomputed_edge_scores = lfs::core::Tensor();
         _edge_precompute_valid = false;
 
-        if (!_params || !_params->use_edge_map || !is_refining(iter)) {
+        if (!_params || !_params->use_edge_map || iter >= static_cast<int>(_params->stop_refine)) {
+            reset_edge_accumulator();
             return;
         }
 
-        if (!_views || !_image_loader || _views->size() == 0 || _splat_data->size() == 0) {
+        if (should_accumulate_edge_sample(iter)) {
+            accumulate_edge_sample(iter, render_output);
+        }
+
+        if (!is_refining(iter)) {
             return;
         }
 
-        _precomputed_edge_scores = compute_edge_scores(iter);
-        _edge_precompute_valid = _precomputed_edge_scores.is_valid() &&
-                                 _precomputed_edge_scores.ndim() == 1 &&
-                                 _precomputed_edge_scores.numel() == static_cast<size_t>(_splat_data->size());
+        if (_edge_sample_count <= 0 ||
+            !_edge_score_sum.is_valid() ||
+            _edge_score_sum.ndim() != 1 ||
+            _edge_score_sum.numel() != static_cast<size_t>(_splat_data->size())) {
+            reset_edge_accumulator();
+            return;
+        }
+
+        _precomputed_edge_scores = _edge_score_sum.clone();
+        _precomputed_edge_scores.div_(static_cast<float>(_edge_sample_count));
+        _edge_precompute_valid = true;
+        reset_edge_accumulator();
     }
 
     void MRNF::ensure_densification_info_shape() {
@@ -452,6 +508,82 @@ namespace lfs::training {
             info.shape()[1] != n) {
             _splat_data->_densification_info = lfs::core::Tensor::zeros({2, n}, _splat_data->means().device());
         }
+    }
+
+    int MRNF::edge_target_samples_per_refine_window() const {
+        const int refine_window = _params ? static_cast<int>(_params->refine_every) : 1;
+        if (!_views || _views->size() == 0) {
+            return std::max(1, std::min(refine_window, MRNF_EDGE_MIN_VIEW_SAMPLES));
+        }
+
+        const int num_cam_dataset = static_cast<int>(_views->size());
+        const int requested_samples = num_cam_dataset < MRNF_EDGE_MIN_VIEW_SAMPLES
+                                          ? num_cam_dataset
+                                          : std::max(
+                                                MRNF_EDGE_MIN_VIEW_SAMPLES,
+                                                static_cast<int>(0.08f * static_cast<float>(num_cam_dataset)));
+        return std::max(1, std::min(refine_window, requested_samples));
+    }
+
+    bool MRNF::should_accumulate_edge_sample(int iter) const {
+        if (!_params || !_params->use_edge_map ||
+            iter <= static_cast<int>(_params->start_refine) ||
+            iter >= static_cast<int>(_params->stop_refine) ||
+            _splat_data->size() == 0) {
+            return false;
+        }
+
+        if (is_refining(iter)) {
+            return true;
+        }
+
+        const int target_samples = edge_target_samples_per_refine_window();
+        const int refine_every = std::max(1, static_cast<int>(_params->refine_every));
+        const int stride = std::max(1, refine_every / target_samples);
+        return (iter % stride) == 0;
+    }
+
+    void MRNF::reset_edge_accumulator() {
+        _edge_score_sum = lfs::core::Tensor();
+        _edge_sample_count = 0;
+        _edge_last_sample_iter = -1;
+    }
+
+    void MRNF::accumulate_edge_sample(int iter, const RenderOutput& render_output) {
+        using namespace lfs::core;
+
+        if (_edge_last_sample_iter == iter) {
+            return;
+        }
+        if (!render_output.camera ||
+            !render_output.target_image.is_valid() ||
+            render_output.target_image.device() != Device::CUDA ||
+            (render_output.target_image.dtype() != DataType::Float32 &&
+             render_output.target_image.dtype() != DataType::UInt8) ||
+            render_output.target_image.ndim() != 3 ||
+            render_output.target_image.shape()[0] < 3) {
+            return;
+        }
+
+        const size_t n = static_cast<size_t>(_splat_data->size());
+        if (!_edge_score_sum.is_valid() ||
+            _edge_score_sum.ndim() != 1 ||
+            _edge_score_sum.numel() != n) {
+            _edge_score_sum = Tensor::zeros({n}, _splat_data->means().device());
+            _edge_sample_count = 0;
+        }
+
+        apply_canny_filter(render_output.target_image, _edge_canny_nms_output);
+        normalize_by_positive_median_inplace(_edge_canny_nms_output);
+
+        auto score_render = edge_rasterize(
+            *render_output.camera,
+            this->get_model(),
+            _edge_canny_nms_output);
+        normalize_by_positive_median_inplace(score_render.edges_score);
+        _edge_score_sum.add_(score_render.edges_score);
+        ++_edge_sample_count;
+        _edge_last_sample_iter = iter;
     }
 
     void MRNF::post_backward(int iter, RenderOutput& /*render_output*/) {
@@ -466,6 +598,7 @@ namespace lfs::training {
             _splat_data->_densification_info = Tensor::empty({0});
             _precomputed_edge_scores = Tensor();
             _edge_precompute_valid = false;
+            reset_edge_accumulator();
         }
 
         if (iter >= static_cast<int>(_params->stop_refine)) {
@@ -1129,6 +1262,7 @@ namespace lfs::training {
             lfs::io::LoadParams params;
             params.resize_factor = _views->get_resize_factor();
             params.max_width = _views->get_max_width();
+            params.output_uint8 = true;
             if (cam->is_undistort_prepared()) {
                 params.undistort = &cam->undistort_params();
             }
@@ -1172,8 +1306,7 @@ namespace lfs::training {
             }
             normalize_by_positive_median_inplace(canny_ws.nms_output);
 
-            lfs::core::Tensor bg;
-            auto score_render = edge_rasterize(*cam, this->get_model(), bg, canny_ws.nms_output);
+            auto score_render = edge_rasterize(*cam, this->get_model(), canny_ws.nms_output);
             normalize_by_positive_median_inplace(score_render.edges_score);
             gaussian_scores.add_(score_render.edges_score);
         }

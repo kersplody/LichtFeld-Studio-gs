@@ -42,6 +42,7 @@ namespace lfs::vis::gui {
         bool key_super = false;
         bool viewport_keyboard_focus = false;
         std::vector<int> keys_pressed;
+        std::vector<int> keys_repeated;
         std::vector<int> keys_released;
         std::vector<uint32_t> text_codepoints;
         std::vector<std::string> text_inputs;
@@ -103,6 +104,8 @@ namespace lfs::vis::gui {
 
         const std::string& getActiveTab() const { return active_tab_id_; }
         void setActiveTab(const std::string& id) { active_tab_id_ = id; }
+        bool syncActiveTab(const std::vector<PanelSummary>& main_tabs,
+                           std::string& focus_panel_name);
 
         static constexpr float SPLITTER_H = 6.0f;
         static constexpr float TAB_BAR_H = 28.0f;
@@ -137,8 +140,6 @@ namespace lfs::vis::gui {
 
         float tab_scroll_offset_ = 0.0f;
         float tab_content_total_h_ = 0.0f;
-        bool tab_scrollbar_dragging_ = false;
-        float tab_scrollbar_drag_offset_ = 0.0f;
         size_t background_preload_index_ = 0;
 
         CursorRequest cursor_request_ = CursorRequest::None;
@@ -150,7 +151,7 @@ namespace lfs::vis::gui {
         static constexpr float PYTHON_CONSOLE_MIN_WIDTH = 200.0f;
         static constexpr float PYTHON_CONSOLE_MAX_RATIO = 0.5f;
         static constexpr float BOTTOM_DOCK_MIN_HEIGHT = 180.0f;
-        static constexpr float BOTTOM_DOCK_DEFAULT_HEIGHT = 320.0f;
+        static constexpr float BOTTOM_DOCK_DEFAULT_HEIGHT = 440.0f;
         static constexpr float BOTTOM_DOCK_MAX_RATIO = 0.65f;
         static constexpr float MIN_VIEWPORT_HEIGHT = 140.0f;
     };

@@ -129,7 +129,7 @@ Built-in template aliases:
 | Full custom retained UI | `template` | Use an absolute path for plugin-local `.rml` |
 | Hybrid panel | `template` plus `draw(ui)` | Render immediate content into `<div id="im-root"></div>` |
 
-When a plugin-local template file such as `main_panel.rml` is present, LichtFeld automatically loads a sibling `main_panel.rcss` stylesheet if it exists.
+When a plugin-local template file such as `main_panel.rml` is present, LichtFeld automatically loads a sibling `main_panel.rcss` stylesheet if it exists. A sibling `main_panel.theme.rcss` file is also loaded for palette-dependent overrides.
 
 ---
 
@@ -461,6 +461,42 @@ from lfs_plugins.tools import ToolRegistry
 | `set_active(tool_id)`      | `bool`               | Activate a tool                          |
 | `get_active()`             | `Optional[ToolDef]`  | Get active tool                          |
 | `get_active_id()`          | `str`                | Get active tool ID                       |
+
+---
+
+## Native Transform Gizmos
+
+| API | Returns | Description |
+|-----|---------|-------------|
+| `lf.TransformGizmo(operation="translate", matrix=[], id="")` | `TransformGizmo` | Reusable native TRS gizmo |
+| `lf.TranslationGizmo(matrix=[], id="")` | `TransformGizmo` | Translate handle |
+| `lf.RotationGizmo(matrix=[], id="")` | `TransformGizmo` | Rotate handle |
+| `lf.ScaleGizmo(matrix=[], id="")` | `TransformGizmo` | Scale handle |
+| `lf.get_transform_gizmo_ids()` | `list[str]` | Attached transform gizmo IDs |
+| `lf.has_transform_gizmos()` | `bool` | Whether any native TRS gizmos are attached |
+| `lf.clear_transform_gizmos()` | `None` | Detach all native TRS gizmos |
+
+`TransformGizmo` properties:
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `id` | `str` | Stable ID |
+| `operation` | `str` | `"translate"`, `"rotate"`, or `"scale"` |
+| `space` | `str` | `"local"` or `"world"` |
+| `matrix` | `list[float]` | 16 floats, column-major |
+| `translation` | `list[float]` | Translation component |
+| `visible`, `enabled`, `input_enabled` | `bool` | Runtime draw/input controls |
+| `active`, `hovered`, `changed` | `bool` | Last-frame interaction state |
+| `snap` | `bool` | Enable snapping |
+| `translate_snap`, `rotate_snap_degrees`, `scale_snap_ratio` | `float` | Per-operation snap settings |
+
+| Method | Description |
+|--------|-------------|
+| `attach()` | Draw without an automatic target |
+| `attach_to_callbacks(getter, setter)` | Bind to arbitrary Python transform callbacks |
+| `attach_to_node(node_name, visualizer_world=True)` | Bind to a scene node |
+| `detach()` | Remove from viewport drawing |
+| `set_on_begin(callback)`, `set_on_change(callback)`, `set_on_end(callback)` | Drag lifecycle callbacks |
 
 ---
 
@@ -876,7 +912,7 @@ ui.image_texture(tex, (256, 256))
 
 ### DynamicTexture
 
-GPU tensor to OpenGL texture bridge via CUDA-GL interop.
+GPU tensor to UI texture bridge. In the Vulkan viewer this uses the backend's opaque ImGui texture handle.
 
 ```python
 tex = lf.ui.DynamicTexture()          # Empty
@@ -886,14 +922,14 @@ tex = lf.ui.DynamicTexture(tensor)    # From tensor
 | Method / Property  | Returns              | Description                                    |
 |--------------------|----------------------|------------------------------------------------|
 | `update(tensor)`   | `None`               | Upload `[H, W, 3\|4]` tensor (auto-converts CPU→CUDA, uint8→float32) |
-| `destroy()`        | `None`               | Release GL resources                           |
-| `id`               | `int`                | OpenGL texture ID                              |
+| `destroy()`        | `None`               | Release UI texture resources                   |
+| `id`               | `int`                | Opaque ImGui backend texture handle            |
 | `width`            | `int`                | Current width in pixels                        |
 | `height`           | `int`                | Current height in pixels                       |
 | `valid`            | `bool`               | `True` if texture is initialized               |
 | `uv1`             | `tuple[float, float]` | UV scale factors for power-of-2 padding        |
 
-Calling `update()` with a different resolution automatically recreates the GL texture. Textures are freed on plugin unload via `lf.ui.free_plugin_textures(name)`.
+Calling `update()` with a different resolution automatically recreates the backend texture. Textures are freed on plugin unload via `lf.ui.free_plugin_textures(name)`.
 
 ### Drag & Drop
 
@@ -1359,8 +1395,9 @@ lf.undo.stack() -> dict
 | `lf.ui.set_language(lang_code)`             | `None`           | Set UI language            |
 | `lf.ui.get_current_language()`              | `str`            | Active language code       |
 | `lf.ui.get_languages()`                     | `list[tuple[str, str]]` | Available languages  |
-| `lf.ui.set_theme(name)`                     | `None`           | Theme switch (`dark`/`light`) |
-| `lf.ui.get_theme()`                         | `str`            | Active theme name          |
+| `lf.ui.set_theme(name)`                     | `None`           | Theme switch by stable theme id |
+| `lf.ui.get_theme()`                         | `str`            | Active stable theme id     |
+| `lf.ui.themes()`                            | `list[dict]`     | Available theme presets    |
 | `lf.ui.set_panel_enabled(panel_id, enabled)`  | `None`           | Toggle panel by id         |
 | `lf.ui.is_panel_enabled(panel_id)`            | `bool`           | Panel enabled state        |
 | `lf.ui.get_panel_names(space=lf.ui.PanelSpace.FLOATING)` | `list[str]` | Panel ids for a space |
@@ -1545,7 +1582,7 @@ from lfs_plugins.icon_manager import get_icon, get_ui_icon, get_scene_icon, get_
 | `get_scene_icon(name)`                      | `int`   | Load `assets/icon/scene/{name}.png`      |
 | `get_plugin_icon(name, plugin_path, plugin_name)` | `int` | Load `{plugin_path}/icons/{name}.png` with fallback |
 
-All return OpenGL texture ID (0 on failure). Icons are cached by C++.
+All return opaque UI texture handles (0 on failure). Icons are cached by C++.
 
 Direct loading:
 ```python

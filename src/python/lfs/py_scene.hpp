@@ -250,7 +250,7 @@ namespace lfs::python {
                 return false;
             return node_->camera->has_mask();
         }
-        std::optional<PyTensor> load_mask(int resize_factor = 1, int max_width = 3840,
+        std::optional<PyTensor> load_mask(int resize_factor = 1, int max_width = 0,
                                           bool invert = false, float threshold = 0.5f) {
             if (!node_->camera || !node_->camera->has_mask())
                 return std::nullopt;
@@ -475,6 +475,9 @@ namespace lfs::python {
         std::optional<PyTensor> selection_mask() const;
         void set_selection(const std::vector<size_t>& indices);
         void set_selection_mask(const PyTensor& mask);
+        void preview_selection_mask(const PyTensor& mask);
+        void commit_selection_preview();
+        void cancel_selection_preview();
         void clear_selection();
         bool has_selection() const { return scene_->hasSelection(); }
 

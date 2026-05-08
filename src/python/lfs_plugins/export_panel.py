@@ -11,6 +11,17 @@ from . import rml_widgets
 from .scrub_fields import ScrubFieldController, ScrubFieldSpec
 from .types import Panel
 
+# Asset Manager integration (optional)
+try:
+    from .asset_manager_integration import register_catalog_asset_path
+
+    ASSET_MANAGER_AVAILABLE = True
+except ImportError:
+    ASSET_MANAGER_AVAILABLE = False
+
+__lfs_panel_classes__ = ["ExportPanel"]
+__lfs_panel_ids__ = ["lfs.export"]
+
 
 class ExportFormat(IntEnum):
     PLY = 0
@@ -19,12 +30,14 @@ class ExportFormat(IntEnum):
     HTML_VIEWER = 3
     USD = 4
     NUREC_USDZ = 5
+    RAD = 6
 
 
 FORMAT_INFO = (
     (ExportFormat.PLY, "export.format.ply_standard"),
     (ExportFormat.SOG, "export.format.sog_supersplat"),
     (ExportFormat.SPZ, "export.format.spz_niantic"),
+    (ExportFormat.RAD, "export.format.rad_random_access"),
     (ExportFormat.USD, "export.format.usd_openusd"),
     (ExportFormat.NUREC_USDZ, "export.format.usdz_nurec"),
     (ExportFormat.HTML_VIEWER, "export.format.html_viewer"),
@@ -52,7 +65,9 @@ class ExportPanel(Panel):
     def __init__(self):
         self._format = ExportFormat.PLY
         self._selected_nodes: Set[str] = set()
+        self._max_export_sh_degree = 3
         self._export_sh_degree = 3
+        self._pinned_sh_degree = True
         self._selection_seeded = False
         self._handle = None
         self._last_node_key = None
@@ -67,6 +82,15 @@ class ExportPanel(Panel):
             self._get_scrub_value,
             self._set_scrub_value,
         )
+        # RAD export settings
+        self._rad_flip_y = False  # Y-flip checkbox (off by default)
+        self._rad_customize_lod = False
+        self._rad_lod_list: list[int] = [100]  # Default to 100%
+        self._rad_new_lod_str = "100"
+        self._rad_lod_collapsed = True  # Whether LOD levels section is collapsed
+        self._doc = None  # Document reference for DOM access
+        self._last_export_path = None  # Track last export path for Asset Manager
+        self._last_export_format = None  # Track last export format for Asset Manager
 
     # ── Data model ────────────────────────────────────────────
 
@@ -93,6 +117,24 @@ class ExportPanel(Panel):
         model.bind_func("progress_pct", self._get_progress_pct)
         model.bind_func("progress_stage", self._get_progress_stage)
 
+        # RAD export settings bindings
+        model.bind_func("show_rad_settings", lambda: self._format == ExportFormat.RAD)
+        model.bind_func("rad_flip_y", lambda: self._rad_flip_y)
+        model.bind_event("toggle_rad_flip_y", self._on_toggle_rad_flip_y)
+        model.bind_func("rad_customize_lod", lambda: self._rad_customize_lod)
+        model.bind_record_list("rad_lod_list")  # Record list for editable values
+        model.bind(
+            "rad_new_lod_str",
+            lambda: self._rad_new_lod_str,
+            self._set_rad_new_lod_str,
+        )
+        model.bind_event("toggle_rad_customize_lod", self._on_toggle_rad_customize_lod)
+        model.bind_event("add_rad_lod", self._on_add_rad_lod)
+        model.bind_event("remove_rad_lod", self._on_remove_rad_lod)
+        model.bind_event("num_step_rad_lod", self._on_num_step_rad_lod)
+        model.bind_event("update_lod_value", self._on_update_lod_value)
+        model.bind_event("toggle_section", self._on_toggle_section)
+
         model.bind_event("do_cancel", self._on_cancel)
         model.bind_event("do_cancel_export", self._on_cancel_export)
         model.bind_record_list("formats")
@@ -102,15 +144,200 @@ class ExportPanel(Panel):
 
     def _set_sh_degree(self, v):
         try:
-            degree = max(0, min(3, int(float(v))))
+            degree = max(0, min(self._max_export_sh_degree, int(float(v))))
         except (ValueError, TypeError):
             return
+
+        self._pinned_sh_degree = (degree == self._max_export_sh_degree)
 
         if degree == self._export_sh_degree:
             return
 
         self._export_sh_degree = degree
         self._dirty_model("sh_degree")
+
+    def _compute_max_export_sh_degree(self, nodes) -> int:
+        """Lowest max_sh_degree across selected splats (caps the export to a value all selected splats can produce)."""
+        selected = [n for n in nodes if n.name in self._selected_nodes]
+        if not selected:
+            return 3
+        degrees = []
+        for node in selected:
+            try:
+                data = node.splat_data()
+            except Exception:
+                data = None
+            if data is None:
+                continue
+            try:
+                degrees.append(int(data.max_sh_degree))
+            except Exception:
+                pass
+        if not degrees:
+            return 3
+        return max(0, min(3, min(degrees)))
+
+    def _refresh_sh_degree_bounds(self, nodes):
+        new_max = self._compute_max_export_sh_degree(nodes)
+
+        spec_changed = new_max != self._max_export_sh_degree
+        self._max_export_sh_degree = new_max
+
+        if spec_changed:
+            self._scrub_fields.set_spec(
+                "sh_degree",
+                ScrubFieldSpec(0.0, float(new_max), 1.0, "%d", data_type=int),
+            )
+
+        if self._pinned_sh_degree:
+            new_value = new_max
+        else:
+            new_value = max(0, min(new_max, self._export_sh_degree))
+
+        if new_value != self._export_sh_degree:
+            self._export_sh_degree = new_value
+            self._dirty_model("sh_degree")
+
+    def _set_rad_new_lod_str(self, v):
+        self._rad_new_lod_str = v if v else ""
+
+    def _update_rad_lod_list(self):
+        """Update the RAD LOD record list in the data model."""
+        if self._handle:
+            self._handle.update_record_list(
+                "rad_lod_list", [{"value": str(lod)} for lod in self._rad_lod_list]
+            )
+
+    def _on_toggle_rad_flip_y(self, _handle, _ev, _args):
+        self._rad_flip_y = not self._rad_flip_y
+        self._dirty_model("rad_flip_y")
+
+    def _on_toggle_rad_customize_lod(self, _handle, _ev, _args):
+        self._rad_customize_lod = not self._rad_customize_lod
+        self._update_rad_lod_list()
+        self._dirty_model("rad_customize_lod")
+
+    def _on_toggle_section(self, _handle, _event, args):
+        """Toggle collapsible section visibility."""
+        if not args:
+            return
+        section = str(args[0])
+        if section != "rad_lod":
+            return
+
+        if not self._doc:
+            return
+
+        # Find the arrow and content elements
+        arrow = self._doc.get_element_by_id("arrow-rad-lod")
+        content = self._doc.get_element_by_id("sec-rad-lod")
+        header = self._doc.get_element_by_id("hdr-rad-lod")
+
+        if content is None:
+            return
+
+        # Toggle the collapsed state
+        expanding = self._rad_lod_collapsed
+        self._rad_lod_collapsed = not expanding
+
+        # Animate the section toggle
+        rml_widgets.animate_section_toggle(
+            content, expanding, arrow, header_element=header
+        )
+
+    def _sync_rad_lod_section_state(self):
+        """Initialize the RAD LOD section visual state."""
+        if not self._doc:
+            return
+        header = self._doc.get_element_by_id("hdr-rad-lod")
+        arrow = self._doc.get_element_by_id("arrow-rad-lod")
+        content = self._doc.get_element_by_id("sec-rad-lod")
+        if content:
+            rml_widgets.sync_section_state(
+                content, not self._rad_lod_collapsed, header, arrow
+            )
+
+    def _on_add_rad_lod(self, _handle, _ev, _args):
+        try:
+            value = int(self._rad_new_lod_str)
+        except (ValueError, TypeError):
+            return
+        # Clamp to 1-100 range
+        value = max(1, min(100, value))
+        # Avoid duplicates
+        if value not in self._rad_lod_list:
+            self._rad_lod_list.append(value)
+            self._rad_lod_list.sort()
+            self._update_rad_lod_list()
+
+    def _on_remove_rad_lod(self, _handle, _ev, args):
+        try:
+            index = int(args[0]) if args else -1
+        except (ValueError, TypeError):
+            return
+        if 0 <= index < len(self._rad_lod_list):
+            self._rad_lod_list.pop(index)
+            # Ensure at least one LOD remains (default to 100 if empty)
+            if not self._rad_lod_list:
+                self._rad_lod_list = [100]
+            self._update_rad_lod_list()
+
+    def _on_update_lod_value(self, _handle, event, _args):
+        """Update a specific LOD value when edited."""
+        # Get the index from the parent row element
+        target = event.current_target()
+        if target is None:
+            return
+
+        # Find the parent row element with data-lod-index
+        parent = target.parent_node()
+        if parent is None:
+            return
+
+        try:
+            index = int(parent.get_attribute("data-lod-index", "-1"))
+        except (ValueError, TypeError):
+            return
+
+        if index < 0 or index >= len(self._rad_lod_list):
+            return
+
+        # Get the new value from the input
+        try:
+            new_value_str = target.get_attribute("value", "")
+            new_value = int(new_value_str)
+        except (ValueError, TypeError):
+            return
+
+        # Clamp to 1-100 range (values outside this range are not allowed)
+        original_value = self._rad_lod_list[index]
+        clamped_value = max(1, min(100, new_value))
+
+        # Check for duplicates (excluding the current index)
+        if (
+            clamped_value in self._rad_lod_list
+            and self._rad_lod_list.index(clamped_value) != index
+        ):
+            # Duplicate found - revert to original value
+            self._update_rad_lod_list()
+            return
+
+        self._rad_lod_list[index] = clamped_value
+        self._rad_lod_list.sort()
+        self._update_rad_lod_list()
+
+    def _on_num_step_rad_lod(self, _handle, _ev, args):
+        try:
+            delta = int(args[0]) if args else 0
+        except (ValueError, TypeError):
+            return
+        try:
+            current = int(self._rad_new_lod_str)
+        except (ValueError, TypeError):
+            current = 100
+        new_value = max(1, min(100, current + delta))
+        self._rad_new_lod_str = str(new_value)
+        self._dirty_model("rad_new_lod_str")
 
     def _get_scrub_value(self, prop):
         del prop
@@ -124,6 +351,7 @@ class ExportPanel(Panel):
 
     def on_mount(self, doc):
         super().on_mount(doc)
+        self._doc = doc
         self._exporting = False
         self._last_progress = -1.0
         self._cached_export_state = {}
@@ -154,6 +382,8 @@ class ExportPanel(Panel):
 
         self._rebuild_format_records()
         self._rebuild_model_records(self._get_splat_nodes())
+        self._update_rad_lod_list()
+        self._sync_rad_lod_section_state()
         self._scrub_fields.mount(doc)
 
     def on_update(self, doc):
@@ -201,6 +431,7 @@ class ExportPanel(Panel):
     def on_unmount(self, doc):
         doc.remove_data_model("export")
         self._handle = None
+        self._doc = None
         self._scrub_fields.unmount()
 
     # ── Helpers ──────────────────────────────────────────────
@@ -227,11 +458,12 @@ class ExportPanel(Panel):
             changed = bool(self._selected_nodes) or self._selection_seeded
             self._selected_nodes.clear()
             self._selection_seeded = False
+            self._pinned_sh_degree = True
             return changed
 
         if not self._selection_seeded:
             self._selected_nodes = node_names
-            self._export_sh_degree = 3
+            self._pinned_sh_degree = True
             self._selection_seeded = True
             self._dirty_model("sh_degree")
             return True
@@ -245,12 +477,17 @@ class ExportPanel(Panel):
 
     def _get_checkbox_from_event(self, event):
         container = event.current_target()
-        target = rml_widgets.find_ancestor_with_attribute(event.target(), "data-node-name", container)
+        target = rml_widgets.find_ancestor_with_attribute(
+            event.target(), "data-node-name", container
+        )
         if target is None:
             return None, None
 
         checkbox = target
-        if checkbox.tag_name != "input" or checkbox.get_attribute("type", "") != "checkbox":
+        if (
+            checkbox.tag_name != "input"
+            or checkbox.get_attribute("type", "") != "checkbox"
+        ):
             checkbox = target.query_selector('input[type="checkbox"]')
         if checkbox is None:
             return None, None
@@ -280,26 +517,28 @@ class ExportPanel(Panel):
         )
 
     def _rebuild_model_records(self, nodes):
-        if not self._handle:
-            return
-        self._handle.update_record_list(
-            "models",
-            [
-                {
-                    "name": node.name,
-                    "selected": node.name in self._selected_nodes,
-                    "count_text": f"({node.gaussian_count})",
-                }
-                for node in nodes
-            ],
-        )
+        if self._handle:
+            self._handle.update_record_list(
+                "models",
+                [
+                    {
+                        "name": node.name,
+                        "selected": node.name in self._selected_nodes,
+                        "count_text": f"({node.gaussian_count})",
+                    }
+                    for node in nodes
+                ],
+            )
         self._has_models = bool(nodes)
+        self._refresh_sh_degree_bounds(nodes)
 
     # ── Event handlers ────────────────────────────────────────
 
     def _on_format_click(self, ev):
         container = ev.current_target()
-        target = rml_widgets.find_ancestor_with_attribute(ev.target(), "data-format-idx", container)
+        target = rml_widgets.find_ancestor_with_attribute(
+            ev.target(), "data-format-idx", container
+        )
         if target is None:
             return
 
@@ -313,6 +552,10 @@ class ExportPanel(Panel):
 
         self._format = new_format
         self._rebuild_format_records()
+        # Dirty RAD settings visibility when format changes
+        self._dirty_model(
+            "show_rad_settings", "rad_flip_y", "rad_customize_lod", "no_rad_lod"
+        )
 
     def _on_model_toggle(self, ev):
         checkbox, node_name = self._get_checkbox_from_event(ev)
@@ -392,6 +635,8 @@ class ExportPanel(Panel):
             return lf.ui.save_usdz_file_dialog(default_name)
         if self._format == ExportFormat.HTML_VIEWER:
             return lf.ui.save_html_file_dialog(default_name)
+        if self._format == ExportFormat.RAD:
+            return lf.ui.save_rad_file_dialog(default_name)
         return None
 
     def _do_export(self):
@@ -404,12 +649,35 @@ class ExportPanel(Panel):
         path = self._get_save_path(default_name)
 
         if path:
-            lf.export_scene(int(self._format), path, selected_nodes, self._export_sh_degree)
+            # Store export info for Asset Manager registration
+            self._last_export_path = path
+            self._last_export_format = self._format
+
+            # Prepare RAD LOD settings if applicable
+            rad_lod_ratios = None
+            if self._format == ExportFormat.RAD and self._rad_customize_lod:
+                # Convert percentages to ratios (e.g., 100 -> 1.0, 50 -> 0.5)
+                rad_lod_ratios = [lod / 100.0 for lod in self._rad_lod_list]
+
+            lf.export_scene(
+                int(self._format),
+                path,
+                selected_nodes,
+                self._export_sh_degree,
+                rad_lod_ratios=rad_lod_ratios,
+                rad_flip_y=self._rad_flip_y,
+            )
             self._exporting = True
             self._last_progress = -1.0
             self._progress_value = "0"
-            self._dirty_model("show_form", "show_progress", "progress_title",
-                              "progress_pct", "progress_stage", "progress_value")
+            self._dirty_model(
+                "show_form",
+                "show_progress",
+                "progress_title",
+                "progress_pct",
+                "progress_stage",
+                "progress_value",
+            )
 
     # ── Progress helpers ─────────────────────────────────────
 
@@ -429,6 +697,11 @@ class ExportPanel(Panel):
         if not state.get("active", False):
             self._exporting = False
             self._selection_seeded = False
+            # Register export with Asset Manager if successful
+            if self._last_export_path and self._last_export_format is not None:
+                self._register_export(self._last_export_path, self._last_export_format)
+                self._last_export_path = None
+                self._last_export_format = None
             lf.ui.set_panel_enabled("lfs.export", False)
             return True
 
@@ -440,3 +713,46 @@ class ExportPanel(Panel):
             return True
 
         return False
+
+    def _format_to_asset_type(self, fmt: ExportFormat) -> str:
+        """Map ExportFormat to asset type string for Asset Manager."""
+        mapping = {
+            ExportFormat.PLY: "ply",
+            ExportFormat.SOG: "sog",
+            ExportFormat.SPZ: "spz",
+            ExportFormat.RAD: "rad",
+            ExportFormat.USD: "usd",
+            ExportFormat.NUREC_USDZ: "usdz",
+            ExportFormat.HTML_VIEWER: "html",
+        }
+        return mapping.get(fmt, "unknown")
+
+    def _register_export(self, path: str, fmt: ExportFormat):
+        """Register exported file with Asset Manager catalog.
+
+        Called after successful export to add/update the asset in the catalog
+        and refresh the Asset Manager UI if open.
+
+        Args:
+            path: Output file path
+            fmt: Export format used
+        """
+        if not ASSET_MANAGER_AVAILABLE:
+            return
+
+        try:
+            # Determine asset type from format
+            asset_type = self._format_to_asset_type(fmt)
+
+            role = "trained_output" if lf.trainer_current_iteration() > 0 else "export"
+            register_catalog_asset_path(
+                path,
+                asset_type=asset_type,
+                role=role,
+                select=True,
+            )
+
+        except Exception:
+            # Asset Manager integration is non-intrusive
+            # Log error but don't fail the export
+            pass

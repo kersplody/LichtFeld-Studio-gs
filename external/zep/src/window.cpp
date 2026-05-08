@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <limits>
 #include <sstream>
 
 #include "zep/buffer.h"
@@ -32,7 +33,9 @@ namespace Zep {
     const float UnderlineMargin = 1.0f;
 
     ZepWindow::ZepWindow(ZepTabWindow& window, ZepBuffer* buffer)
-        : ZepComponent(window.GetEditor()), m_tabWindow(window), m_pBuffer(buffer) {
+        : ZepComponent(window.GetEditor()),
+          m_tabWindow(window),
+          m_pBuffer(buffer) {
         m_bufferRegion = std::make_shared<Region>();
         m_numberRegion = std::make_shared<Region>();
         m_indicatorRegion = std::make_shared<Region>();
@@ -240,6 +243,11 @@ namespace Zep {
             }
 
             m_layoutDirty = true;
+            if (pMsg->type == BufferMessageType::FoldsChanged &&
+                m_pBuffer->IsByteHiddenByFold(m_bufferCursor.Index())) {
+                m_bufferCursor = GlyphIterator(m_pBuffer, m_pBuffer->GetVisibleByteForFoldedByte(m_bufferCursor.Index()));
+                m_cursorMoved = true;
+            }
 
             if (pMsg->type != BufferMessageType::PreBufferChange) {
                 // Make sure the cursor is on its 'display' part of the flash cycle after an edit.
@@ -505,9 +513,16 @@ namespace Zep {
             if (m_pBuffer->GetLineCount() <= bufferLine)
                 break;
 
+            if (m_pBuffer->IsLineHiddenByFold(bufferLine)) {
+                bufferLine++;
+                continue;
+            }
+
             ByteRange lineByteRange;
             if (!m_pBuffer->GetLineOffsets(bufferLine, lineByteRange))
                 break;
+
+            const FoldRange* foldedRange = m_pBuffer->GetFoldStartingOnLine(bufferLine);
 
             // Padding at the top of the line
             NVec2f topPadding = NVec2f(DPI_Y((float)GetEditor().GetConfig().lineMargins.x), DPI_Y((float)GetEditor().GetConfig().lineMargins.y));
@@ -564,6 +579,11 @@ namespace Zep {
             lineInfo->lineTextSizePx.x = xOffset;
             lineInfo->lineTextSizePx.y = float(textHeight);
             lineInfo->isSplitContinuation = false;
+            if (foldedRange != nullptr) {
+                lineInfo->hasFoldPlaceholder = true;
+                lineInfo->foldedByteRange = foldedRange->range;
+                lineInfo->foldedLineCount = std::max(1l, foldedRange->endLine - foldedRange->startLine);
+            }
 
             auto inlineMargins = DPI_VEC2(GetEditor().GetConfig().inlineWidgetMargins);
 
@@ -1230,6 +1250,19 @@ namespace Zep {
             lineStart = false;
         }
 
+        if (displayPass == WindowPass::Text && lineInfo.hasFoldPlaceholder) {
+            const std::string foldText =
+                "  ... " + std::to_string(lineInfo.foldedLineCount) +
+                (lineInfo.foldedLineCount == 1 ? " line" : " lines");
+            const auto foldColor = m_pBuffer->GetTheme().GetColor(ThemeColor::TextDim);
+            display.DrawChars(*lineInfo.pFont,
+                              NVec2f(ToWindowX(lineInfo.lineTextSizePx.x + defaultCharSize.x),
+                                     ToWindowY(lineInfo.yOffsetPx + lineInfo.padding.x)),
+                              foldColor,
+                              (const uint8_t*)foldText.c_str(),
+                              (const uint8_t*)(foldText.c_str() + foldText.size()));
+        }
+
         display.SetClipRect(NRectf{});
 
         return true;
@@ -1283,6 +1316,10 @@ namespace Zep {
     }
 
     void ZepWindow::SetBufferCursor(GlyphIterator location) {
+        if (m_pBuffer != nullptr && location.Valid() && m_pBuffer->IsByteHiddenByFold(location.Index())) {
+            location = GlyphIterator(m_pBuffer, m_pBuffer->GetVisibleByteForFoldedByte(location.Index()));
+        }
+
         // Don't move cursor if not necessary
         // This helps preserve 'lastCursorColumn' from being changed all the time
         // during line clamps, etc.
@@ -1293,6 +1330,108 @@ namespace Zep {
             DisableToolTipTillMove();
         }
         assert(!m_pBuffer || m_bufferCursor.Valid());
+    }
+
+    GlyphIterator ZepWindow::BufferLocationFromWindowPoint(const NVec2f& point,
+                                                           const bool clamp_to_text_region) {
+        UpdateLayout();
+
+        if (m_pBuffer == nullptr || m_windowLines.empty()) {
+            return GlyphIterator();
+        }
+
+        NVec2f clamped_point = point;
+        if (clamp_to_text_region) {
+            const float right = std::max(m_textRegion->rect.Left(), m_textRegion->rect.Right() - 1.0f);
+            const float bottom = std::max(m_textRegion->rect.Top(), m_textRegion->rect.Bottom() - 1.0f);
+            clamped_point.x = std::clamp(clamped_point.x, m_textRegion->rect.Left(), right);
+            clamped_point.y = std::clamp(clamped_point.y, m_textRegion->rect.Top(), bottom);
+        } else if (!m_textRegion->rect.Contains(clamped_point)) {
+            return GlyphIterator();
+        }
+
+        const float buffer_y = clamped_point.y + m_textOffsetPx - m_textRegion->rect.Top();
+        const SpanInfo* selected_line = nullptr;
+        for (const auto* line : m_windowLines) {
+            if (line == nullptr) {
+                continue;
+            }
+
+            selected_line = line;
+            const float line_bottom = line->yOffsetPx + line->FullLineHeightPx() + line->lineWidgetHeights.y;
+            if (buffer_y <= line_bottom) {
+                break;
+            }
+        }
+
+        if (selected_line == nullptr) {
+            return GlyphIterator();
+        }
+
+        if (selected_line->lineCodePoints.empty()) {
+            return GlyphIterator(m_pBuffer, static_cast<unsigned long>(selected_line->lineByteRange.first)).Clamped();
+        }
+
+        const float buffer_x = clamped_point.x + m_textOffsetXPx - m_textRegion->rect.Left();
+        float char_x = m_xPad;
+        GlyphIterator nearest = selected_line->lineCodePoints.front().iterator;
+        float nearest_distance = std::numeric_limits<float>::max();
+
+        for (const auto& code_point : selected_line->lineCodePoints) {
+            const float center_x = char_x + code_point.size.x * 0.5f;
+            const float distance = std::abs(buffer_x - center_x);
+            if (distance < nearest_distance) {
+                nearest_distance = distance;
+                nearest = code_point.iterator;
+            }
+            char_x += code_point.size.x + m_xPad;
+        }
+
+        return nearest.Clamped();
+    }
+
+    void ZepWindow::DrawSelectionPreview(const GlyphRange& range, const NVec4f& color) {
+        UpdateLayout();
+
+        if (m_pBuffer == nullptr || m_windowLines.empty() ||
+            !range.first.Valid() || !range.second.Valid() ||
+            range.first == range.second) {
+            return;
+        }
+
+        auto first = range.first;
+        auto second = range.second;
+        if (second < first) {
+            std::swap(first, second);
+        }
+
+        auto& display = GetEditor().GetDisplay();
+        display.SetClipRect(m_textRegion->rect);
+
+        for (long window_line = m_visibleLineIndices.x;
+             window_line < m_visibleLineIndices.y && window_line < static_cast<long>(m_windowLines.size());
+             ++window_line) {
+            const auto* line = m_windowLines[window_line];
+            if (line == nullptr || line->lineCodePoints.empty() ||
+                line->lineByteRange.second < first.Index() ||
+                line->lineByteRange.first > second.Index()) {
+                continue;
+            }
+
+            for (const auto& code_point : line->lineCodePoints) {
+                if (code_point.iterator < first || code_point.iterator > second) {
+                    continue;
+                }
+
+                display.DrawRectFilled(
+                    NRectf(NVec2f(code_point.pos.x, ToWindowY(line->yOffsetPx)),
+                           NVec2f(code_point.pos.x + code_point.size.x,
+                                  ToWindowY(line->yOffsetPx + line->FullLineHeightPx()))),
+                    color);
+            }
+        }
+
+        display.SetClipRect(NRectf{});
     }
 
     void ZepWindow::DisableToolTipTillMove() {
@@ -1319,6 +1458,9 @@ namespace Zep {
     GlyphIterator ZepWindow::GetBufferCursor() {
         // Ensure cursor is always valid inside the buffer
         m_bufferCursor.Clamp();
+        if (m_pBuffer != nullptr && m_pBuffer->IsByteHiddenByFold(m_bufferCursor.Index())) {
+            m_bufferCursor = GlyphIterator(m_pBuffer, m_pBuffer->GetVisibleByteForFoldedByte(m_bufferCursor.Index()));
+        }
         assert(!m_pBuffer || m_bufferCursor.Valid());
         return m_bufferCursor;
     }
@@ -1420,6 +1562,9 @@ namespace Zep {
         bool found = false;
         float xPos = m_xPad;
         auto cursor = m_bufferCursor;
+        if (m_pBuffer != nullptr && cursor.Valid() && m_pBuffer->IsByteHiddenByFold(cursor.Index())) {
+            cursor = GlyphIterator(m_pBuffer, m_pBuffer->GetVisibleByteForFoldedByte(cursor.Index()));
+        }
         cursor.Clamp();
 
         int count = 0;
@@ -1849,19 +1994,24 @@ namespace Zep {
     NVec2i ZepWindow::BufferToDisplay(const GlyphIterator& loc) {
         UpdateLayout();
 
+        GlyphIterator visibleLoc = loc;
+        if (m_pBuffer != nullptr && visibleLoc.Valid() && m_pBuffer->IsByteHiddenByFold(visibleLoc.Index())) {
+            visibleLoc = GlyphIterator(m_pBuffer, m_pBuffer->GetVisibleByteForFoldedByte(visibleLoc.Index()));
+        }
+
         NVec2i ret(0, 0);
         int line_number = 0;
 
         // TODO: Performance; quick lookup for line
         for (auto& line : m_windowLines) {
             // If inside the line...
-            if (line->lineByteRange.first <= loc.Index() && line->lineByteRange.second > loc.Index()) {
+            if (line->lineByteRange.first <= visibleLoc.Index() && line->lineByteRange.second > visibleLoc.Index()) {
                 ret.y = line_number;
                 ret.x = 0;
 
                 // Scan the code points for where we are
                 for (auto& ch : line->lineCodePoints) {
-                    if (ch.iterator == loc) {
+                    if (ch.iterator == visibleLoc) {
                         return ret;
                     }
                     ret.x++;

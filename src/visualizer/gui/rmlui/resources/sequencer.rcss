@@ -422,17 +422,14 @@ body {
 .keyframe {
     display: block;
     position: absolute;
-    width: 12dp;
-    height: 12dp;
+    width: 14dp;
+    height: 14dp;
     top: 50%;
-    margin-top: -6dp;
-    margin-left: -6dp;
+    margin-top: -7dp;
+    margin-left: -7dp;
     transform: rotate(45deg);
     border-radius: 1dp;
-}
-
-.keyframe:hover {
-    opacity: 0.85;
+    pointer-events: none;
 }
 
 .keyframe.selected {
@@ -460,12 +457,13 @@ body {
 #playhead-handle {
     display: block;
     position: absolute;
-    top: -10dp;
-    left: -4dp;
-    width: 8dp;
-    height: 12dp;
+    top: -14dp;
+    left: -7dp;
+    width: 14dp;
+    height: 14dp;
     background-color: #ff6688;
-    border-radius: 4dp;
+    border-radius: 7dp;
+    pointer-events: none;
 }
 
 #time-display {
@@ -480,8 +478,64 @@ body {
     font-size: 11dp;
 }
 
-#duration {
+#duration-field {
+    position: relative;
+    display: flex;
+    align-items: center;
+    margin-left: 2dp;
+    padding: 0 4dp;
+    min-height: 18dp;
+    border-width: 1dp;
+    border-color: transparent;
+    border-radius: 4dp;
+    cursor: pointer;
+    transition: border-color 0.12s quadratic-out, background-color 0.12s quadratic-out;
+}
+
+#duration-field:hover,
+#duration-field.is-editing {
+    border-color: #45475a;
+    background-color: #313244;
+}
+
+#duration-field.is-editing {
+    cursor: text;
+}
+
+#duration,
+#duration-input {
+    font-family: "JetBrains Mono";
     font-size: 11dp;
+    color: #cdd6f4;
+}
+
+#duration {
+    white-space: nowrap;
+}
+
+#duration-input {
+    display: none;
+    width: 60dp;
+    padding: 0;
+    margin: 0;
+    min-height: 0;
+    background-color: transparent;
+    border-width: 0;
+    box-shadow: none;
+}
+
+#duration-field.is-editing #duration {
+    display: none;
+}
+
+#duration-field.is-editing #duration-input {
+    display: block;
+}
+
+#duration-input:focus,
+#duration-input:focus-visible {
+    border-width: 0;
+    box-shadow: none;
 }
 
 #easing-stripe {

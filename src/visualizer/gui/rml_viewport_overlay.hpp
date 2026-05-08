@@ -4,7 +4,8 @@
 
 #pragma once
 
-#include "gui/rmlui/rml_fbo.hpp"
+#include "gui/rmlui/rml_tooltip.hpp"
+
 #include <chrono>
 #include <cstddef>
 #include <glm/glm.hpp>
@@ -43,25 +44,24 @@ namespace lfs::vis::gui {
                               float secondary_x = 0.0f,
                               float secondary_width = 0.0f);
         void setGTMetricsOverlay(GTMetricsOverlayState state);
+        void reloadResources();
         void render();
-        void compositeToScreen(int screen_w, int screen_h) const;
         void processInput(const PanelInputState& input);
         bool wantsInput() const { return wants_input_; }
         [[nodiscard]] bool blocksPointer(double screen_x, double screen_y) const;
 
     private:
         bool updateTheme();
-        std::string generateThemeRCSS(const lfs::vis::Theme& t) const;
+        void cacheBodyTemplate();
         void ensureBodyDataModelBound(Rml::Element* body);
         bool shouldRunDocumentHooks(bool force) const;
         void updateToolbarRoots();
         void applyGTMetricsOverlay();
+        bool applyFrameTooltip();
 
         RmlUIManager* rml_manager_ = nullptr;
         Rml::Context* rml_context_ = nullptr;
         Rml::ElementDocument* document_ = nullptr;
-
-        RmlFBO fbo_;
 
         glm::vec2 vp_pos_{0, 0};
         glm::vec2 vp_size_{0, 0};
@@ -74,6 +74,7 @@ namespace lfs::vis::gui {
         std::size_t last_theme_signature_ = 0;
         bool has_theme_signature_ = false;
         std::string base_rcss_;
+        std::string body_template_rml_;
         bool wants_input_ = false;
         bool doc_registered_ = false;
         bool render_needed_ = true;
@@ -84,6 +85,7 @@ namespace lfs::vis::gui {
         int last_render_w_ = 0;
         int last_render_h_ = 0;
         GTMetricsOverlayState gt_metrics_overlay_;
+        RmlTooltipController tooltip_;
         std::chrono::steady_clock::time_point last_document_hook_run_{};
         static constexpr auto kDocumentHookPollInterval = std::chrono::milliseconds(100);
     };

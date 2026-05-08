@@ -77,12 +77,13 @@ namespace lfs::rendering {
             obtain(blob, buffers.global_idx, n_primitives, 128);
             cub::DeviceScan::ExclusiveSum(
                 nullptr, buffers.cub_workspace_size,
-                buffers.offset, buffers.offset,
+                buffers.n_touched_tiles, buffers.offset,
                 n_primitives);
             size_t sorting_workspace_size;
             cub::DeviceRadixSort::SortPairs(
                 nullptr, sorting_workspace_size,
-                buffers.depth_keys, buffers.primitive_indices,
+                buffers.depth_keys,
+                buffers.primitive_indices,
                 n_primitives);
             buffers.cub_workspace_size = max(buffers.cub_workspace_size, sorting_workspace_size);
             obtain(blob, buffers.cub_workspace, buffers.cub_workspace_size, 128);
@@ -95,16 +96,16 @@ namespace lfs::rendering {
     struct PerInstanceBuffers {
         size_t cub_workspace_size;
         char* cub_workspace;
-        cub::DoubleBuffer<ushort> keys;
+        cub::DoubleBuffer<uint> keys;
         cub::DoubleBuffer<uint> primitive_indices;
 
         static PerInstanceBuffers from_blob(char*& blob, int n_instances) {
             PerInstanceBuffers buffers;
-            ushort* keys_current;
+            uint* keys_current;
             obtain(blob, keys_current, n_instances, 128);
-            ushort* keys_alternate;
+            uint* keys_alternate;
             obtain(blob, keys_alternate, n_instances, 128);
-            buffers.keys = cub::DoubleBuffer<ushort>(keys_current, keys_alternate);
+            buffers.keys = cub::DoubleBuffer<uint>(keys_current, keys_alternate);
             uint* primitive_indices_current;
             obtain(blob, primitive_indices_current, n_instances, 128);
             uint* primitive_indices_alternate;
@@ -120,22 +121,11 @@ namespace lfs::rendering {
     };
 
     struct PerTileBuffers {
-        size_t cub_workspace_size;
-        char* cub_workspace;
         uint2* instance_ranges;
-        uint* n_buckets;
-        uint* bucket_offsets;
 
         static PerTileBuffers from_blob(char*& blob, int n_tiles) {
             PerTileBuffers buffers;
             obtain(blob, buffers.instance_ranges, n_tiles, 128);
-            obtain(blob, buffers.n_buckets, n_tiles, 128);
-            obtain(blob, buffers.bucket_offsets, n_tiles, 128);
-            cub::DeviceScan::InclusiveSum(
-                nullptr, buffers.cub_workspace_size,
-                buffers.n_buckets, buffers.bucket_offsets,
-                n_tiles);
-            obtain(blob, buffers.cub_workspace, buffers.cub_workspace_size, 128);
             return buffers;
         }
     };

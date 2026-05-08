@@ -32,14 +32,28 @@ endif()
 
 project(LichtFeld-Studio VERSION 0.5.2 LANGUAGES CUDA CXX C)
 
-# On Windows, route all build outputs to build/<Config>/ so Debug and Release
-# binaries are separated. $<CONFIG> evaluates at build time for both
-# single-config (Ninja) and multi-config (MSVC) generators.
-# Linux: CMake default (flat binary dir) is used.
-if(WIN32)
+# The application ships CUDA DLLs and links CUDA::cudart throughout the target graph.
+# Keep CUDA language targets on the shared runtime as well; MSVC otherwise adds
+# cudart_static.lib implicitly, which collides with cudart.lib when linking DLLs.
+set(CMAKE_CUDA_RUNTIME_LIBRARY Shared CACHE STRING "CUDA runtime linkage" FORCE)
+
+# On Windows with a multi-config generator (MSVC/Visual Studio, Ninja Multi-Config),
+# route all build outputs to build/<Config>/ so Debug and Release binaries are
+# separated. Single-config generators (Ninja, NMake) use a flat binary dir —
+# the selected CMAKE_BUILD_TYPE is baked in at configure time, so no subdirectory
+# is needed; each target's per-target RUNTIME_OUTPUT_DIRECTORY (set to
+# ${CMAKE_BINARY_DIR}) ensures a flat layout under build/.
+# Linux: same per-target convention applies; no override needed here.
+# The else() branch explicitly sets to "" to override any stale cached value.
+get_property(_IS_MULTI_CONFIG GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
+if(WIN32 AND _IS_MULTI_CONFIG)
     set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/$<CONFIG>")
     set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/$<CONFIG>")
     set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/$<CONFIG>")
+else()
+    set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "")
+    set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "")
+    set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "")
 endif()
 
 # Disable C++20 module scanning
@@ -88,7 +102,8 @@ file(WRITE "${CMAKE_BINARY_DIR}/include/git_version.h"
 # Setup
 get_filename_component(PROJ_ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}" ABSOLUTE)
 
-option(ENABLE_CUDA_GL_INTEROP "Enable CUDA-OpenGL interoperability" ON)
+option(ENABLE_VULKAN_VIEWER "Resolve and link required Vulkan viewer dependencies" ON)
+set(ENABLE_VULKAN_VIEWER ON CACHE BOOL "Vulkan viewer dependencies are required" FORCE)
 option(BUILD_TESTS "Build tests" OFF)
 option(BUILD_UNICODE_TEST_ONLY "Build only Unicode path test (no CUDA)" OFF)
 option(ENABLE_ALLOCATION_PROFILING "Enable tensor allocation profiling" OFF)
@@ -100,7 +115,7 @@ option(ENABLE_CUDA_DEBUG_SYNC "Enable synchronous CUDA kernel checking (slow)" O
 option(ENABLE_TENSOR_OP_TRACING "Enable tensor operation tracing" OFF)
 
 # Add -rdynamic for backtrace symbol resolution
-if(UNIX AND NOT APPLE)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -rdynamic")
 endif()
 
@@ -214,6 +229,9 @@ include(ProcessorCount)
 ProcessorCount(total_cores)
 if(total_cores GREATER 1)
     math(EXPR used_cores "${total_cores} - 2")
+    if(used_cores GREATER 20)
+        set(used_cores 20)
+    endif()
     set(ENV{MAKEFLAGS} "-j${used_cores}")
     message(STATUS "Building with ${used_cores} cores")
 endif()
@@ -332,8 +350,11 @@ message(STATUS "CUDA Toolkit ${CUDAToolkit_VERSION} found at ${CUDAToolkit_TARGE
 # Find packages
 find_package(TBB REQUIRED)
 find_package(Threads REQUIRED)
-find_package(OpenGL REQUIRED)
-find_package(glad REQUIRED)
+if(ENABLE_VULKAN_VIEWER)
+    find_package(Vulkan REQUIRED)
+    find_package(VulkanMemoryAllocator CONFIG REQUIRED)
+    find_package(volk CONFIG REQUIRED)
+endif()
 find_package(SDL3 REQUIRED)
 lfs_validate_linux_sdl_video_backends()
 find_package(glm REQUIRED)
@@ -352,6 +373,11 @@ find_package(pxr CONFIG REQUIRED)
 find_package(assimp REQUIRED)
 find_package(RmlUi CONFIG REQUIRED)
 
+# Vulkan-native depth: glm::perspective/ortho/frustum must emit clip-space z in
+# [0, 1], not OpenGL's [-1, 1]. Keeps gl_FragDepth, the grid pass, the depth-
+# blit pass and the CPU-side NDC bound checks on a single convention.
+target_compile_definitions(glm::glm INTERFACE GLM_FORCE_DEPTH_ZERO_TO_ONE)
+
 # TORCH_CUDA_ARCH_LIST is already defined by Torch.
 # Use the detected architecture as the default, but respect an explicit
 # -DCMAKE_CUDA_ARCHITECTURES=... from the configure command.
@@ -359,45 +385,10 @@ if(LichtFeld-Studio_CUDA_ARCH AND NOT CMAKE_CUDA_ARCHITECTURES)
     set(CMAKE_CUDA_ARCHITECTURES "${LichtFeld-Studio_CUDA_ARCH}" CACHE STRING "CUDA architectures" FORCE)
 endif()
 
-if(WIN32)
-    set(CMAKE_CUDA_RUNTIME_LIBRARY "Shared") # when using INTEROP in windows static and dynamic symbols are mixed
-endif()
-
-# Check for CUDA-OpenGL interop capability (only if enabled)
-if(ENABLE_CUDA_GL_INTEROP)
-    include(CheckCXXSourceCompiles)
-    set(CMAKE_REQUIRED_INCLUDES ${CUDAToolkit_INCLUDE_DIRS} ${OPENGL_INCLUDE_DIRS})
-    set(CMAKE_REQUIRED_LIBRARIES ${CUDA_LIBRARIES} ${OPENGL_LIBRARIES})
-    check_cxx_source_compiles("
-        #ifdef _WIN32
-        #include <windows.h>
-        #endif
-        #include <cuda_runtime.h>
-
-        // On ARM machines, you must include the gl headers before including cuda_gl_interop.h
-        // Please refer to /usr/local/cuda/include/cuda_gl_interop.h
-        #if defined(__arm__) || defined(__aarch64__)
-        #include <GL/gl.h>
-        #endif
-
-        #include <cuda_gl_interop.h>
-        int main() {
-            cudaGraphicsResource_t resource;
-            return 0;
-        }
-    " CUDA_GL_INTEROP_FOUND)
-
-    if(CUDA_GL_INTEROP_FOUND)
-        message(STATUS "CUDA-OpenGL interop support: ENABLED")
-        set(CUDA_GL_INTEROP_ENABLED 1)
-    else()
-        message(WARNING "CUDA-OpenGL interop support: DISABLED (headers not found)")
-        set(CUDA_GL_INTEROP_ENABLED 0)
-    endif()
+if(ENABLE_VULKAN_VIEWER)
+    set(LFS_VULKAN_VIEWER_ENABLED 1)
 else()
-    message(STATUS "CUDA-OpenGL interop support: DISABLED (by user option)")
-    set(CUDA_GL_INTEROP_FOUND FALSE)
-    set(CUDA_GL_INTEROP_ENABLED 0)
+    set(LFS_VULKAN_VIEWER_ENABLED 0)
 endif()
 
 # Create configuration header (static options)
@@ -462,7 +453,6 @@ add_executable(${PROJECT_NAME}
     src/app/mcp_sequencer_tools.cpp
     src/app/mcp_ui_registry_tools.cpp
     src/app/converter.cpp
-    src/app/splash_screen.cpp
     resources/lichtfeld-studio.rc
 )
 
@@ -481,22 +471,20 @@ target_include_directories(${PROJECT_NAME}
         ${CMAKE_CURRENT_SOURCE_DIR}/src/visualizer   # For internal visualizer headers used by GUI MCP
         ${CMAKE_CURRENT_SOURCE_DIR}/src/rendering/include  # For rendering headers (MCP GUI tools)
         ${CMAKE_CURRENT_SOURCE_DIR}/external         # For external headers
-        ${CMAKE_CURRENT_SOURCE_DIR}/external/imguizmo
 
         ${CUDAToolkit_INCLUDE_DIRS}
-        ${OPENGL_INCLUDE_DIRS}
 )
 
 if(CMAKE_CXX_LINK_GROUP_USING_RESCAN_SUPPORTED)
     set(LFS_APP_INTERNAL_LINK_LIBS
-        "$<LINK_GROUP:RESCAN,lfs_visualizer,lfs_mcp,lfs_sequencer,lfs_rendering,lfs_training,lfs_geometry,lfs_core,lfs_io,lfs_video,fastlfs_backend,lfs_python_utils>"
+        "$<LINK_GROUP:RESCAN,lfs_visualizer,lfs_mcp,lfs_sequencer,lfs_rendering_tensor,lfs_training,lfs_geometry,lfs_core,lfs_io,lfs_video,fastlfs_backend,lfs_python_utils>"
     )
 else()
     set(LFS_APP_INTERNAL_LINK_LIBS
         lfs_visualizer
         lfs_mcp
         lfs_sequencer
-        lfs_rendering
+        lfs_rendering_tensor
         lfs_training
         lfs_geometry
         lfs_core
@@ -511,14 +499,38 @@ target_link_libraries(${PROJECT_NAME}
         PRIVATE
         ${LFS_APP_INTERNAL_LINK_LIBS}
 
-        ${OPENGL_LIBRARIES}
         CUDA::cudart
         spdlog::spdlog
         taywee::args
         OpenImageIO::OpenImageIO
-        glad::glad
         SDL3::SDL3
 )
+
+if(ENABLE_VULKAN_VIEWER)
+    target_link_libraries(${PROJECT_NAME}
+            PRIVATE
+            Vulkan::Vulkan
+            GPUOpen::VulkanMemoryAllocator
+            volk::volk_headers)
+
+    if(BUILD_PORTABLE AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        get_filename_component(_lfs_vulkan_loader_realpath "${Vulkan_LIBRARY}" REALPATH)
+        get_filename_component(_lfs_vulkan_loader_realname "${_lfs_vulkan_loader_realpath}" NAME)
+        add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E make_directory
+                    "$<TARGET_FILE_DIR:${PROJECT_NAME}>/lib"
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${_lfs_vulkan_loader_realpath}"
+                    "$<TARGET_FILE_DIR:${PROJECT_NAME}>/lib/${_lfs_vulkan_loader_realname}"
+                COMMAND ${CMAKE_COMMAND} -E create_symlink
+                    "${_lfs_vulkan_loader_realname}"
+                    "$<TARGET_FILE_DIR:${PROJECT_NAME}>/lib/libvulkan.so.1"
+                COMMAND ${CMAKE_COMMAND} -E create_symlink
+                    "libvulkan.so.1"
+                    "$<TARGET_FILE_DIR:${PROJECT_NAME}>/lib/libvulkan.so"
+                COMMENT "Copying Vulkan loader to portable runtime directory")
+    endif()
+endif()
 
 # The app embeds Python and loads the nanobind module at runtime for panels,
 # menus, and operators. Keep the runtime artifact in lockstep with the app.
@@ -794,14 +806,6 @@ add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
     COMMENT "Creating resource directory structure"
 )
 
-# Copy rendering shaders
-add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
-        "${CMAKE_SOURCE_DIR}/src/rendering/resources/shaders"
-        "${RESOURCE_DIR}/shaders"
-    COMMENT "Copying rendering shaders"
-)
-
 # Copy visualizer icons
 add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
@@ -818,12 +822,11 @@ add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
     COMMENT "Copying visualizer fonts"
 )
 
-# Copy fonts (from rendering - JetBrainsMono for viewport gizmo)
 add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${CMAKE_SOURCE_DIR}/src/rendering/resources/assets/JetBrainsMono-Regular.ttf"
-        "${RESOURCE_DIR}/assets/fonts/"
-    COMMENT "Copying rendering fonts"
+        "${RESOURCE_DIR}/assets/fonts/JetBrainsMono-Regular.ttf"
+    COMMENT "Copying rendering monospace font"
 )
 
 # Copy themes
@@ -866,22 +869,27 @@ add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
     COMMENT "Copying application assets"
 )
 
-# Copy locale files
-add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+# Copy locale files (named target so it can be run without rebuilding the exe)
+add_custom_target(copy_locale_files
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${RESOURCE_DIR}/locales"
     COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
         "${CMAKE_SOURCE_DIR}/src/visualizer/gui/resources/locales"
         "${RESOURCE_DIR}/locales"
-    COMMENT "Copying locale files"
+    COMMENT "Syncing locale files"
 )
+add_dependencies(${PROJECT_NAME} copy_locale_files)
 
 # OpenUSD runtime resources (schema/file-format plugin metadata).
-# Copy them beside the app under ../lib/usd and register that path at startup.
+# On Windows: copy to <exe>/usd/ so that relative LibraryPaths resolve to the
+# DLL copies already loaded from the exe directory.
+# On Linux: copy to <exe>/../lib/usd/ (conventional layout).
 set(_USD_PLUGIN_SOURCE_DIR "")
 foreach(_candidate
     "${CMAKE_BINARY_DIR}/vcpkg_installed/${VCPKG_TARGET_TRIPLET}/lib/usd"
     "${CMAKE_BINARY_DIR}/vcpkg_installed/${VCPKG_TARGET_TRIPLET}/bin/usd"
     "${CMAKE_BINARY_DIR}/src/python/usd")
-    if(NOT _USD_PLUGIN_SOURCE_DIR AND EXISTS "${_candidate}")
+    # Require an actual plugin sub-directory (not just the root index).
+    if(NOT _USD_PLUGIN_SOURCE_DIR AND EXISTS "${_candidate}/ar/resources/plugInfo.json")
         set(_USD_PLUGIN_SOURCE_DIR "${_candidate}")
     endif()
 endforeach()
@@ -896,7 +904,11 @@ foreach(_candidate
     endif()
 endforeach()
 
-set(_USD_PLUGIN_DEST "$<TARGET_FILE_DIR:${PROJECT_NAME}>/../lib/usd")
+if(WIN32)
+    set(_USD_PLUGIN_DEST "$<TARGET_FILE_DIR:${PROJECT_NAME}>/usd")
+else()
+    set(_USD_PLUGIN_DEST "$<TARGET_FILE_DIR:${PROJECT_NAME}>/../lib/usd")
+endif()
 
 if(EXISTS "${_USD_PLUGIN_SOURCE_DIR}")
     add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
@@ -920,21 +932,23 @@ endif()
 
 message(STATUS "Post-build: Resources will be copied to \${BUILD_DIR}/resources/")
 
-# Per-config output directory variants — used by MSVC (multi-config); no-op for single-config generators
-set_target_properties(${PROJECT_NAME} PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY_DEBUG        "${CMAKE_BINARY_DIR}/Debug"
-    RUNTIME_OUTPUT_DIRECTORY_RELEASE      "${CMAKE_BINARY_DIR}/Release"
-    RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_BINARY_DIR}/RelWithDebInfo"
-    RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL   "${CMAKE_BINARY_DIR}/MinSizeRel"
-)
+# Per-config output directory variants for the exe: multi-config only.
+# Single-config Ninja on Windows uses the flat binary dir (build/).
+get_property(_exe_is_multi_config GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
+if(WIN32 AND _exe_is_multi_config)
+    set_target_properties(${PROJECT_NAME} PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY_DEBUG        "${CMAKE_BINARY_DIR}/Debug"
+        RUNTIME_OUTPUT_DIRECTORY_RELEASE      "${CMAKE_BINARY_DIR}/Release"
+        RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_BINARY_DIR}/RelWithDebInfo"
+        RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL   "${CMAKE_BINARY_DIR}/MinSizeRel"
+    )
+endif()
 
 # Platform-specific settings
 if(UNIX)
-    target_link_libraries(${PROJECT_NAME} PRIVATE GL GLU)
-
     if(BUILD_PORTABLE)
         set_target_properties(${PROJECT_NAME} PROPERTIES
-                INSTALL_RPATH "$ORIGIN:$ORIGIN/lib"
+                INSTALL_RPATH "$ORIGIN:$ORIGIN/lib:$ORIGIN/../lib"
                 BUILD_WITH_INSTALL_RPATH TRUE
                 INSTALL_RPATH_USE_LINK_PATH FALSE
         )
@@ -982,11 +996,13 @@ if(UNIX)
 
 elseif(WIN32)
     # On Windows, DLLs in the same directory as the .exe are automatically found.
-    # Use $<CONFIG> so both Ninja (single-config) and MSVC (multi-config) route
-    # binaries to build/Debug, build/Release, etc.
-    set_target_properties(${PROJECT_NAME} PROPERTIES
-        RUNTIME_OUTPUT_DIRECTORY              "${CMAKE_BINARY_DIR}/$<CONFIG>"
-    )
+    # Multi-config generators use $<CONFIG> subdir; single-config (Ninja) uses
+    # the flat binary dir (build/) set via the global CMAKE_RUNTIME_OUTPUT_DIRECTORY.
+    if(_exe_is_multi_config)
+        set_target_properties(${PROJECT_NAME} PROPERTIES
+            RUNTIME_OUTPUT_DIRECTORY              "${CMAKE_BINARY_DIR}/$<CONFIG>"
+        )
+    endif()
     if(MSVC)
         target_compile_options(${PROJECT_NAME} PRIVATE /bigobj)
     endif()
@@ -1036,6 +1052,7 @@ configure_build_type(fastlfs_backend)
 configure_build_type(lfs_core)
 configure_build_type(lfs_core_cuda)
 configure_build_type(lfs_training)
+configure_build_type(lfs_rendering_tensor)
 configure_build_type(lfs_rendering)
 configure_build_type(lfs_visualizer)
 configure_build_type(lfs_io)
@@ -1068,12 +1085,14 @@ message(STATUS "===========================================")
 message(STATUS "Build Configuration:")
 message(STATUS "  CUDA Version: ${CUDAToolkit_VERSION}")
 message(STATUS "  CUDA Archs: ${CMAKE_CUDA_ARCHITECTURES}")
-message(STATUS "  OpenGL Found: ${OPENGL_FOUND}")
+message(STATUS "  Vulkan Viewer Dependencies: ${ENABLE_VULKAN_VIEWER}")
+if(ENABLE_VULKAN_VIEWER)
+    message(STATUS "  Vulkan Found: ${Vulkan_FOUND}")
+    message(STATUS "  Vulkan Include Dirs: ${Vulkan_INCLUDE_DIRS}")
+endif()
 message(STATUS "  FreeType Found: ${FREETYPE_FOUND}")
 message(STATUS "  WebP Found: ${WebP_FOUND}")
 message(STATUS "  LibArchive Found: ${LibArchive_FOUND}")
-message(STATUS "  CUDA-GL Interop Option: ${ENABLE_CUDA_GL_INTEROP}")
-message(STATUS "  CUDA-GL Interop Available: ${CUDA_GL_INTEROP_FOUND}")
 message(STATUS "  Build Type: ${CMAKE_BUILD_TYPE}")
 message(STATUS "  C++ Standard: ${CMAKE_CXX_STANDARD}")
 message(STATUS "  CUDA Standard: ${CMAKE_CUDA_STANDARD}")
@@ -1124,7 +1143,6 @@ install(TARGETS lfs_mcp
 install(FILES "${CMAKE_SOURCE_DIR}/LICENSE" DESTINATION ".")
 
 set(INSTALL_RESOURCE_DIR "${CMAKE_INSTALL_DATADIR}/LichtFeld-Studio")
-install(DIRECTORY "${CMAKE_SOURCE_DIR}/src/rendering/resources/shaders" DESTINATION "${INSTALL_RESOURCE_DIR}")
 install(DIRECTORY "${CMAKE_SOURCE_DIR}/src/visualizer/gui/assets/icon" DESTINATION "${INSTALL_RESOURCE_DIR}/assets")
 install(DIRECTORY "${CMAKE_SOURCE_DIR}/src/visualizer/gui/assets/fonts" DESTINATION "${INSTALL_RESOURCE_DIR}/assets")
 install(FILES "${CMAKE_SOURCE_DIR}/src/rendering/resources/assets/JetBrainsMono-Regular.ttf" DESTINATION "${INSTALL_RESOURCE_DIR}/assets/fonts")
@@ -1143,13 +1161,20 @@ install(DIRECTORY "${CMAKE_SOURCE_DIR}/src/visualizer/gui/rmlui/resources/" DEST
 install(DIRECTORY "${CMAKE_SOURCE_DIR}/src/visualizer/gui/resources/locales" DESTINATION "${INSTALL_RESOURCE_DIR}")
 
 # OpenUSD plugin resources (schema definitions + plugInfo.json files)
+# On Windows configure_usd_plugins() looks for <exe_dir>/usd → install next to the exe (bin/usd).
+# On Linux it looks for <exe_dir>/../lib/usd → install in lib/usd (unchanged).
+if(WIN32)
+    set(_USD_INSTALL_DEST "${CMAKE_INSTALL_BINDIR}/usd")
+else()
+    set(_USD_INSTALL_DEST "${CMAKE_INSTALL_LIBDIR}/usd")
+endif()
 if(EXISTS "${_USD_PLUGIN_SOURCE_DIR}")
-    install(DIRECTORY "${_USD_PLUGIN_SOURCE_DIR}/" DESTINATION "${CMAKE_INSTALL_LIBDIR}/usd"
+    install(DIRECTORY "${_USD_PLUGIN_SOURCE_DIR}/" DESTINATION "${_USD_INSTALL_DEST}"
             PATTERN "__pycache__" EXCLUDE
             PATTERN "*.pyc" EXCLUDE)
 endif()
 if(EXISTS "${_USD_ROOT_INDEX}")
-    install(FILES "${_USD_ROOT_INDEX}" DESTINATION "${CMAKE_INSTALL_LIBDIR}/usd")
+    install(FILES "${_USD_ROOT_INDEX}" DESTINATION "${_USD_INSTALL_DEST}")
 endif()
 
 # Plugin development documentation
@@ -1244,11 +1269,34 @@ if(BUILD_PORTABLE)
             [[.*libstdc[+][+].*]] [[.*libgcc_s.*]]
             [[.*libnvimgcodec.*]] [[.*libnvjpeg_ext.*]])
 
-    # Search directories for runtime dependencies.
-    # Portable builds are Windows Release-only; binaries are in build/Release/.
-    set(_SEARCH_DIRS_STR "\"${CMAKE_BINARY_DIR}\" \"${CMAKE_BINARY_DIR}/Release\" \"${CMAKE_BINARY_DIR}/external/nvImageCodec\" \"${CUDAToolkit_BIN_DIR}\" \"${CUDAToolkit_LIBRARY_DIR}\"")
+    # Search directories for runtime dependencies (quoted for paths with spaces on Windows)
+    set(_RUNTIME_SEARCH_DIRS
+            "${CMAKE_BINARY_DIR}"
+            "${CMAKE_BINARY_DIR}/Release"
+            "${CMAKE_BINARY_DIR}/lib"
+            "${CMAKE_BINARY_DIR}/external/nvImageCodec"
+            "${CUDAToolkit_BIN_DIR}"
+            "${CUDAToolkit_LIBRARY_DIR}")
+    if(DEFINED VCPKG_TARGET_TRIPLET)
+        list(APPEND _RUNTIME_SEARCH_DIRS
+                "${CMAKE_BINARY_DIR}/vcpkg_installed/${VCPKG_TARGET_TRIPLET}/bin"
+                "${CMAKE_BINARY_DIR}/vcpkg_installed/${VCPKG_TARGET_TRIPLET}/lib"
+                "${CMAKE_BINARY_DIR}/vcpkg_installed/${VCPKG_TARGET_TRIPLET}/debug/bin"
+                "${CMAKE_BINARY_DIR}/vcpkg_installed/${VCPKG_TARGET_TRIPLET}/debug/lib")
+    endif()
 
-    # Helper: bundle runtime dependencies for a target
+    set(_SEARCH_DIRS_STR "")
+    foreach(_runtime_search_dir IN LISTS _RUNTIME_SEARCH_DIRS)
+        string(APPEND _SEARCH_DIRS_STR " \"${_runtime_search_dir}\"")
+    endforeach()
+
+    # Helper: bundle runtime dependencies for a target.
+    # On Windows DLLs must live beside the exe (bin/); on Linux they go in lib/.
+    if(WIN32)
+        set(_BUNDLE_DEST "${CMAKE_INSTALL_BINDIR}")
+    else()
+        set(_BUNDLE_DEST "${CMAKE_INSTALL_LIBDIR}")
+    endif()
     function(bundle_runtime_deps TARGET_FILE IS_LIBRARY)
         if(IS_LIBRARY)
             set(_type "LIBRARIES")
@@ -1256,7 +1304,6 @@ if(BUILD_PORTABLE)
             set(_type "EXECUTABLES")
         endif()
         install(CODE "
-            set(_lib \"\${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBDIR}\")
             file(GET_RUNTIME_DEPENDENCIES
                 ${_type} \"${TARGET_FILE}\"
                 RESOLVED_DEPENDENCIES_VAR _deps
@@ -1264,7 +1311,7 @@ if(BUILD_PORTABLE)
                 PRE_EXCLUDE_REGEXES ${_PRE_EXCLUDE}
                 POST_EXCLUDE_REGEXES ${_POST_EXCLUDE})
             foreach(_d IN LISTS _deps)
-                file(INSTALL \"\${_d}\" DESTINATION \"\${_lib}\" FOLLOW_SYMLINK_CHAIN)
+                file(INSTALL \"\${_d}\" DESTINATION \"\${CMAKE_INSTALL_PREFIX}/${_BUNDLE_DEST}\" FOLLOW_SYMLINK_CHAIN)
             endforeach()
         " COMPONENT runtime)
     endfunction()
@@ -1274,20 +1321,14 @@ if(BUILD_PORTABLE)
         bundle_runtime_deps("$<TARGET_FILE:nvjpeg_ext>" TRUE)
     endif()
 
-    if(UNIX AND NOT APPLE)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         configure_file(
                 "${CMAKE_SOURCE_DIR}/cmake/templates/run_lichtfeld.sh.in"
                 "${CMAKE_BINARY_DIR}/run_lichtfeld.sh"
                 @ONLY)
         install(PROGRAMS "${CMAKE_BINARY_DIR}/run_lichtfeld.sh" DESTINATION ${CMAKE_INSTALL_BINDIR})
     elseif(WIN32)
-        # Copy DLLs to bin/ for Windows search path
         install(CODE "
-            # Copy all DLLs from lib/ to bin/
-            file(GLOB _dlls \"\${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBDIR}/*.dll\")
-            foreach(_d IN LISTS _dlls)
-                file(INSTALL \"\${_d}\" DESTINATION \"\${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}\")
-            endforeach()
             # Copy extensions/ from build to dist/extensions/
             # Handle both single-config (Ninja) and multi-config (VS) generators
             foreach(_cfg IN ITEMS \"\" \"Release\" \"Debug\" \"RelWithDebInfo\" \"MinSizeRel\")

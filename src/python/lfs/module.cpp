@@ -8,6 +8,7 @@
 #include <nanobind/stl/vector.h>
 
 #include <deque>
+#include <optional>
 
 #include "notification_bridge.hpp"
 #include "py_animation.hpp"
@@ -782,17 +783,26 @@ NB_MODULE(lichtfeld, m) {
     m.def(
         "load_file",
         [](const std::string& path, const bool is_dataset,
-           const std::string& output_path, const std::string& init_path) {
+           const std::string& output_path, const std::string& init_path,
+           const std::string& centralize_dataset,
+           std::optional<int> max_width,
+           bool apply_auto_crop) {
             nb::gil_scoped_release release;
             lfs::core::events::cmd::LoadFile{
                 .path = python_utf8_path(path),
                 .is_dataset = is_dataset,
                 .output_path = python_utf8_path(output_path),
-                .init_path = python_utf8_path(init_path)}
+                .init_path = python_utf8_path(init_path),
+                .centralize_dataset = centralize_dataset,
+                .max_width = max_width,
+                .apply_auto_crop = apply_auto_crop}
                 .emit();
         },
         nb::arg("path"), nb::arg("is_dataset") = false,
         nb::arg("output_path") = "", nb::arg("init_path") = "",
+        nb::arg("centralize_dataset") = "off",
+        nb::arg("max_width") = nb::none(),
+        nb::arg("apply_auto_crop") = false,
         "Load a file (PLY, checkpoint) or dataset into the scene.");
 
     m.def(
@@ -826,11 +836,18 @@ NB_MODULE(lichtfeld, m) {
 
     m.def(
         "export_scene",
-        [](int format, const std::string& path, const std::vector<std::string>& node_names, int sh_degree) {
-            lfs::python::invoke_export(format, path, node_names, sh_degree);
+        [](int format, const std::string& path, const std::vector<std::string>& node_names, int sh_degree,
+           const std::optional<std::vector<float>>& rad_lod_ratios, bool rad_flip_y) {
+            std::vector<float> lod_ratios;
+            if (rad_lod_ratios.has_value()) {
+                lod_ratios = rad_lod_ratios.value();
+            }
+            lfs::python::invoke_export(format, path, node_names, sh_degree, lod_ratios, rad_flip_y);
         },
         nb::arg("format"), nb::arg("path"), nb::arg("node_names"), nb::arg("sh_degree"),
-        "Export scene nodes to file. Format: 0=PLY, 1=SOG, 2=SPZ, 3=HTML, 4=USD, 5=USDZ NuRec.");
+        nb::arg("rad_lod_ratios") = nb::none(),
+        nb::arg("rad_flip_y") = false,
+        "Export scene nodes to file. Format: 0=PLY, 1=SOG, 2=SPZ, 3=HTML, 4=USD, 5=USDZ NuRec, 6=RAD.");
 
     m.def(
         "save_config_file",
@@ -1177,6 +1194,46 @@ NB_MODULE(lichtfeld, m) {
         nb::arg("name"), "Get node transform matrix (16 floats, column-major)");
 
     m.def(
+        "get_node_source_path", [](const std::string& name) -> std::optional<std::string> {
+            const auto* sm = lfs::python::get_scene_manager();
+            if (!sm)
+                return std::nullopt;
+
+            if (auto path = sm->getPlyPath(name); path) {
+                return lfs::core::path_to_utf8(*path);
+            }
+
+            const auto& scene = sm->getScene();
+            const auto* node = scene.getNode(name);
+            if (!node)
+                return std::nullopt;
+
+            if (node->type == lfs::core::NodeType::DATASET) {
+                const auto dataset_path = sm->getDatasetPath();
+                if (!dataset_path.empty()) {
+                    return lfs::core::path_to_utf8(dataset_path);
+                }
+            }
+
+            if (node->parent_id != lfs::core::NULL_NODE) {
+                if (const auto* parent = scene.getNodeById(node->parent_id); parent) {
+                    if (parent->type == lfs::core::NodeType::DATASET) {
+                        const auto dataset_path = sm->getDatasetPath();
+                        if (!dataset_path.empty()) {
+                            return lfs::core::path_to_utf8(dataset_path);
+                        }
+                    }
+                    if (auto path = sm->getPlyPath(parent->name); path) {
+                        return lfs::core::path_to_utf8(*path);
+                    }
+                }
+            }
+
+            return std::nullopt;
+        },
+        nb::arg("name"), "Get original source path for a node if available");
+
+    m.def(
         "get_node_visualizer_world_transform", [](const std::string& name) -> std::optional<std::vector<float>> {
             auto* sm = lfs::python::get_scene_manager();
             if (!sm)
@@ -1325,7 +1382,7 @@ NB_MODULE(lichtfeld, m) {
                 const auto path = lfs::vis::getAssetPath("icon/" + name + ".png");
                 const auto [data, width, height, channels] = lfs::core::load_image_with_alpha(path);
 
-                const auto result = lfs::python::create_gl_texture(data, width, height, channels);
+                const auto result = lfs::python::create_ui_texture(data, width, height, channels);
                 lfs::core::free_image(data);
 
                 const auto tex_id = static_cast<uint64_t>(result.texture_id);
@@ -1336,12 +1393,12 @@ NB_MODULE(lichtfeld, m) {
                 return 0;
             }
         },
-        nb::arg("name"), "Load an icon texture from assets/icon/{name}.png, returns OpenGL texture ID");
+        nb::arg("name"), "Load an icon texture from assets/icon/{name}.png, returns UI texture ID");
 
     m.def(
         "free_icon", [](const uint64_t texture_id) {
             if (texture_id > 0)
-                lfs::python::delete_gl_texture(static_cast<uint32_t>(texture_id));
+                lfs::python::delete_ui_texture(texture_id);
         },
         nb::arg("texture_id"), "Free an icon texture");
 
@@ -1526,7 +1583,7 @@ NB_MODULE(lichtfeld, m) {
     auto mesh_module = m.def_submodule("mesh", "Mesh operations and OpenMesh bindings");
     lfs::python::register_mesh(mesh_module);
 
-    // Mesh-to-splat conversion (async, uses GL thread)
+    // Mesh-to-splat conversion (async, uses the graphics thread)
     lfs::python::register_mesh2splat(m);
     lfs::python::register_splat_simplify(m);
 
@@ -1574,11 +1631,6 @@ NB_MODULE(lichtfeld, m) {
     build_info.attr("platform") = "Linux";
 #else
     build_info.attr("platform") = "Unknown";
-#endif
-#ifdef CUDA_GL_INTEROP_ENABLED
-    build_info.attr("cuda_gl_interop") = true;
-#else
-    build_info.attr("cuda_gl_interop") = false;
 #endif
     build_info.attr("repo_url") = "https://github.com/MrNeRF/LichtFeld-Studio";
     build_info.attr("website_url") = "https://lichtfeld.io";
@@ -1876,7 +1928,7 @@ Plugin Hooks (RAII):
   # Auto-unregisters when handler is destroyed
 
 Mesh-to-Splat:
-  lf.mesh_to_splat("name")       - Convert mesh to splats (async)
+  lf.mesh_to_splat("name")       - Convert a mesh node into Gaussian splats
   lf.is_mesh2splat_active()      - Check if conversion is running
   lf.get_mesh2splat_progress()   - Get progress (0.0-1.0)
   lf.get_mesh2splat_stage()      - Get current stage text

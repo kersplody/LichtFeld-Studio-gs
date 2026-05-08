@@ -234,11 +234,22 @@ def get_key_for_action(action: Action, mode: ToolMode = ToolMode.GLOBAL) -> int:
 def get_trigger_description(action: Action, mode: ToolMode = ToolMode.GLOBAL) -> str:
     """Get human-readable description of action's trigger"""
 
+def get_trigger(action: Action, mode: ToolMode = ToolMode.GLOBAL) -> object:
+    """Get action's trigger as a serializable dict"""
+
 def set_binding(mode: ToolMode, action: Action, key: int, modifiers: int = 0) -> None:
     """Bind a key to an action in given mode"""
 
+def set_trigger_binding(mode: ToolMode, action: Action, trigger: dict) -> bool:
+    """Bind a key, mouse button, scroll, or drag trigger dict to an action"""
+
 def clear_binding(mode: ToolMode, action: Action) -> None:
     """Remove binding for an action in given mode"""
+
+def find_conflict_for_action(mode: ToolMode, action: Action) -> object:
+    """
+    Return {other_action, other_mode} if another action shares this action's trigger, else None
+    """
 
 def get_action_name(action: Action) -> str:
     """Get display name for an action"""
@@ -248,6 +259,9 @@ def get_key_name(key: int) -> str:
 
 def get_modifier_string(modifiers: int) -> str:
     """Get display string for modifier bitmask"""
+
+def get_allowed_trigger_kinds(action: Action) -> list:
+    """Get allowed trigger kinds for an action"""
 
 def get_available_profiles() -> list[str]:
     """Get list of available keymap profile names"""
@@ -272,6 +286,9 @@ def start_capture(mode: ToolMode, action: Action) -> None:
 
 def cancel_capture() -> None:
     """Cancel active capture"""
+
+def capture_scroll(modifiers: int = 0, chord_key: int | None = None) -> None:
+    """Forward a scroll-wheel event into the active capture"""
 
 def is_capturing() -> bool:
     """Check if capture mode is active"""

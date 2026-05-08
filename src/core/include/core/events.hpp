@@ -25,7 +25,8 @@ namespace lfs::core {
                               SPZ = 2,
                               HTML_VIEWER = 3,
                               USD = 4,
-                              NUREC_USDZ = 5 };
+                              NUREC_USDZ = 5,
+                              RAD = 6 };
 
 // Event macro using shared event bridge (solves singleton duplication between exe and Python module)
 #define EVENT(Name, ...)                                   \
@@ -56,7 +57,7 @@ namespace lfs::core {
             EVENT(ResetTraining, );
             EVENT(SwitchToLatestCheckpoint, );
             EVENT(SaveCheckpoint, std::optional<int> iteration;);
-            EVENT(LoadFile, std::filesystem::path path; bool is_dataset; std::filesystem::path output_path; std::filesystem::path init_path;);
+            EVENT(LoadFile, std::filesystem::path path; bool is_dataset; std::filesystem::path output_path; std::filesystem::path init_path; std::string centralize_dataset; std::optional<int> max_width; bool apply_auto_crop = false;);
             EVENT(LoadCheckpointForTraining, std::filesystem::path checkpoint_path; std::filesystem::path dataset_path; std::filesystem::path output_path;);
             EVENT(ImportColmapCameras, std::filesystem::path sparse_path;);
             EVENT(LoadConfigFile, std::filesystem::path path;);
@@ -123,6 +124,8 @@ namespace lfs::core {
             EVENT(SequencerSelectKeyframe, size_t keyframe_index;);
             EVENT(SequencerDeleteKeyframe, size_t keyframe_index;);
             EVENT(SequencerSetKeyframeEasing, size_t keyframe_index; int easing_type;);
+            EVENT(SaveAsset, std::string node_name;);
+            EVENT(SaveAssetAs, std::string node_name; std::string asset_name;);
         } // namespace cmd
 
         // ============================================================================

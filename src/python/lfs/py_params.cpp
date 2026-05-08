@@ -275,7 +275,7 @@ namespace lfs::python {
                         "Initial rho for sparsity optimization")
             .int_prop(&OptimizationParameters::tile_mode,
                       "tile_mode", "Tile Mode", 1, 1, 4,
-                      "Tile mode (1, 2, or 4)")
+                      "Tile mode for 3DGUT training only (1, 2, or 4; ignored for 3DGS/FastGS)")
             .float_prop(&OptimizationParameters::steps_scaler,
                         "steps_scaler", "Steps Scaler", 1.0f, 0.0f, 10.0f,
                         "Scale training step counts")
@@ -403,7 +403,7 @@ namespace lfs::python {
             [](const DatasetConfig& c) { return c.test_every; });
 
         add_int(
-            "max_width", "Max Width", 3840, 640, 4096, "Maximum image width", false,
+            "max_width", "Max Width", 3840, 0, 65535, "Maximum image width; 0 disables the cap", false,
             [](const DatasetConfig& c) { return c.max_width; },
             [](DatasetConfig& c, int v) { c.max_width = v; });
 
@@ -1105,7 +1105,7 @@ namespace lfs::python {
                 "tile_mode",
                 [](PyOptimizationParams& self) { return self.params().tile_mode; },
                 [](PyOptimizationParams&, int v) { modify_params([v](auto& p) { p.tile_mode = v; }); },
-                "Tile mode (1, 2, or 4)")
+                "Tile mode for 3DGUT training only (1, 2, or 4; ignored for 3DGS/FastGS)")
             .def_prop_rw(
                 "steps_scaler",
                 [](PyOptimizationParams& self) { return self.params().steps_scaler; },
@@ -1366,11 +1366,11 @@ namespace lfs::python {
                 [](PyDatasetConfig& self, int v) {
                     if (!self.can_edit())
                         throw std::runtime_error("Cannot edit dataset params during training");
-                    if (v <= 0 || v > 4096)
-                        throw std::invalid_argument("max_width must be between 1 and 4096");
+                    if (v < 0)
+                        throw std::invalid_argument("max_width must be non-negative; 0 disables the cap");
                     self.params().max_width = v;
                 },
-                "Maximum image width in pixels")
+                "Maximum image width in pixels; 0 disables the cap")
             .def_prop_rw(
                 "use_cpu_cache",
                 [](const PyDatasetConfig& self) { return self.params().loading_params.use_cpu_memory; },
@@ -1388,7 +1388,11 @@ namespace lfs::python {
                         throw std::runtime_error("Cannot edit dataset params during training");
                     self.params().loading_params.use_fs_cache = v;
                 },
-                "Use filesystem cache for images");
+                "Use filesystem cache for images")
+            .def_prop_ro(
+                "centralize_dataset",
+                [](const PyDatasetConfig& self) { return self.params().centralize_dataset; },
+                "Dataset centralization mode used for the last load: 'none', 'auto', 'by_pointcloud', 'by_cameras'");
 
         m.def(
             "dataset_params", []() { return PyDatasetConfig{}; },

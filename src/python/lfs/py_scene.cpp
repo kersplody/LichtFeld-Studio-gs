@@ -619,10 +619,14 @@ namespace lfs::python {
     }
 
     std::optional<PySceneNode> PyScene::get_node(const std::string& name) {
-        auto* node = scene_->getMutableNode(name);
+        // Use the const lookup + const_cast so we don't blow the combined-model
+        // cache on every read. Actual mutations go through SceneNode property
+        // setters whose callbacks trigger Scene::notifyMutation, which still
+        // invalidates the cache — same pattern as get_nodes/get_visible_nodes.
+        const auto* node = scene_->getNode(name);
         if (!node)
             return std::nullopt;
-        return PySceneNode(node, scene_);
+        return PySceneNode(const_cast<core::SceneNode*>(node), scene_);
     }
 
     std::vector<PySceneNode> PyScene::get_nodes() {
@@ -855,6 +859,26 @@ namespace lfs::python {
             return;
         }
         scene_->setSelectionMask(std::make_shared<core::Tensor>(mask.tensor()));
+    }
+
+    void PyScene::preview_selection_mask(const PyTensor& mask) {
+        if (auto* const scene_manager = get_scene_manager()) {
+            (void)scene_manager->previewSelectionMask(mask.tensor());
+            return;
+        }
+        scene_->setSelectionMask(std::make_shared<core::Tensor>(mask.tensor()));
+    }
+
+    void PyScene::commit_selection_preview() {
+        if (auto* const scene_manager = get_scene_manager()) {
+            scene_manager->commitSelectionPreview();
+        }
+    }
+
+    void PyScene::cancel_selection_preview() {
+        if (auto* const scene_manager = get_scene_manager()) {
+            scene_manager->cancelSelectionPreview();
+        }
     }
 
     void PyScene::clear_selection() {
@@ -1090,7 +1114,7 @@ namespace lfs::python {
             .def_prop_ro("has_camera", &PySceneNode::has_camera, "Whether this node has camera data")
             .def_prop_ro("has_mask", &PySceneNode::has_mask, "Whether this camera node has a mask file")
             .def("load_mask", &PySceneNode::load_mask,
-                 nb::arg("resize_factor") = 1, nb::arg("max_width") = 3840,
+                 nb::arg("resize_factor") = 1, nb::arg("max_width") = 0,
                  nb::arg("invert") = false, nb::arg("threshold") = 0.5f,
                  "Load mask as tensor [1, H, W] on CUDA (None if not a camera node or no mask)")
             .def_prop_ro("camera_R", &PySceneNode::camera_R, "Camera rotation matrix [3, 3]")
@@ -1281,6 +1305,9 @@ Returns:
             .def_prop_ro("selection_mask", &PyScene::selection_mask, "Current selection mask tensor [N] uint8 (None if no selection)")
             .def("set_selection", &PyScene::set_selection, nb::arg("indices"), "Set selection from index tensor")
             .def("set_selection_mask", &PyScene::set_selection_mask, nb::arg("mask"), "Set selection from boolean mask tensor [N]")
+            .def("preview_selection_mask", &PyScene::preview_selection_mask, nb::arg("mask"), "Preview a selection mask without pushing an undo step")
+            .def("commit_selection_preview", &PyScene::commit_selection_preview, "Commit a transient selection update as one undo step")
+            .def("cancel_selection_preview", &PyScene::cancel_selection_preview, "Cancel a transient selection update and restore the original selection")
             .def("clear_selection", &PyScene::clear_selection, "Clear all selected Gaussians")
             .def("has_selection", &PyScene::has_selection, "Check if any Gaussians are selected")
             // Selection groups

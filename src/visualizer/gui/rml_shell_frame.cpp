@@ -2,16 +2,11 @@
  *
  * SPDX-License-Identifier: GPL-3.0-or-later */
 
-// clang-format off
-#include <glad/glad.h>
-// clang-format on
-
 #include "gui/rml_shell_frame.hpp"
 #include "core/logger.hpp"
 #include "gui/rmlui/rml_document_utils.hpp"
 #include "gui/rmlui/rml_theme.hpp"
 #include "gui/rmlui/rmlui_manager.hpp"
-#include "gui/rmlui/rmlui_render_interface.hpp"
 #include "internal/resource_paths.hpp"
 #include "theme/theme.hpp"
 
@@ -53,7 +48,6 @@ namespace lfs::vis::gui {
     }
 
     void RmlShellFrame::shutdown() {
-        fbo_.destroy();
         if (rml_context_ && rml_manager_)
             rml_manager_->destroyContext("shell_frame");
         rml_context_ = nullptr;
@@ -63,16 +57,39 @@ namespace lfs::vis::gui {
         status_region_ = nullptr;
     }
 
-    std::string RmlShellFrame::generateThemeRCSS(const lfs::vis::Theme& t) const {
-        using rml_theme::colorToRml;
+    void RmlShellFrame::reloadResources() {
+        if (!rml_context_)
+            return;
 
-        const auto shell_bg = colorToRml(t.menu_background());
+        if (document_) {
+            rml_context_->UnloadDocument(document_);
+            rml_context_->Update();
+        }
 
-        return std::format(
-            "#menu-region {{ background-color: {}; }}\n"
-            "#right-panel-region {{ background-color: {}; }}\n"
-            "#status-region {{ background-color: {}; }}\n",
-            shell_bg, shell_bg, shell_bg);
+        document_ = nullptr;
+        menu_region_ = nullptr;
+        right_panel_region_ = nullptr;
+        status_region_ = nullptr;
+        base_rcss_.clear();
+        has_theme_signature_ = false;
+
+        try {
+            const auto rml_path = lfs::vis::getAssetPath("rmlui/shell.rml");
+            document_ = rml_documents::loadDocument(rml_context_, rml_path);
+            if (!document_) {
+                LOG_ERROR("RmlShellFrame: failed to reload shell.rml");
+                return;
+            }
+            document_->Show();
+        } catch (const std::exception& e) {
+            LOG_ERROR("RmlShellFrame: resource not found during reload: {}", e.what());
+            return;
+        }
+
+        menu_region_ = document_->GetElementById("menu-region");
+        right_panel_region_ = document_->GetElementById("right-panel-region");
+        status_region_ = document_->GetElementById("status-region");
+        updateTheme();
     }
 
     void RmlShellFrame::updateTheme() {
@@ -88,7 +105,7 @@ namespace lfs::vis::gui {
         if (base_rcss_.empty())
             base_rcss_ = rml_theme::loadBaseRCSS("rmlui/shell.rcss");
 
-        rml_theme::applyTheme(document_, base_rcss_, rml_theme::generateAllThemeMedia([this](const auto& th) { return generateThemeRCSS(th); }));
+        rml_theme::applyTheme(document_, base_rcss_, rml_theme::loadBaseRCSS("rmlui/shell.theme.rcss"));
     }
 
     void RmlShellFrame::render(const ShellRegions& regions) {
@@ -121,32 +138,12 @@ namespace lfs::vis::gui {
             status_region_->SetProperty("height", std::format("{:.0f}px", regions.status.h));
         }
 
-        if (!rml_manager_->shouldDeferFboUpdate(fbo_)) {
-            rml_context_->SetDimensions(Rml::Vector2i(w, h));
-            rml_context_->Update();
+        if (!rml_manager_ || !rml_manager_->getVulkanRenderInterface())
+            return;
 
-            fbo_.ensure(w, h);
-            if (!fbo_.valid())
-                return;
-
-            auto* render = rml_manager_->getRenderInterface();
-            assert(render);
-            render->SetViewport(w, h);
-
-            GLint prev_fbo = 0;
-            fbo_.bind(&prev_fbo);
-            render->SetTargetFramebuffer(fbo_.fbo());
-
-            render->BeginFrame();
-            rml_context_->Render();
-            render->EndFrame();
-
-            render->SetTargetFramebuffer(0);
-            fbo_.unbind(prev_fbo);
-        }
-
-        if (fbo_.valid())
-            fbo_.blitToScreen(0.0f, 0.0f, full_w, full_h, w, h);
+        rml_context_->SetDimensions(Rml::Vector2i(w, h));
+        rml_context_->Update();
+        rml_manager_->queueVulkanContext(rml_context_);
     }
 
 } // namespace lfs::vis::gui

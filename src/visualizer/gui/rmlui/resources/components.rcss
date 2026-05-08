@@ -240,6 +240,7 @@ selectbox {
 }
 
 selectbox option {
+    display: block;
     padding: 2dp 6dp;
     font-size: 11dp;
     transition: background-color 0.1s quadratic-out;
@@ -722,6 +723,12 @@ progress fill {
     font-size: 12dp;
 }
 
+.context-menu-shortcut {
+    float: right;
+    display: inline;
+    padding: 0;
+}
+
 .context-menu-separator {
     display: block;
     height: 1dp;
@@ -866,7 +873,7 @@ progress fill {
 
 .icon-btn {
     display: inline-block;
-    padding: 4dp;
+    padding: 8dp;
     background-color: transparent;
     border-width: 0;
     cursor: pointer;
@@ -1028,6 +1035,10 @@ crf-curve {
     color: #f38ba8;
 }
 
+.status-warning {
+    color: #f9e2af;
+}
+
 .status-muted {
     color: #a6adc8;
 }
@@ -1061,4 +1072,20 @@ crf-curve {
 .select-chip.selected {
     color: #1e1e2e;
     background-color: #89b4fa;
+}
+
+.frame-tooltip {
+    display: none;
+    position: absolute;
+    z-index: 100;
+    border-width: 1dp;
+    border-radius: 3dp;
+    padding: 4dp 8dp;
+    font-size: 12dp;
+    max-width: 320dp;
+    pointer-events: none;
+}
+
+.frame-tooltip.visible {
+    display: block;
 }

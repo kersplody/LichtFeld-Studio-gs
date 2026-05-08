@@ -2,20 +2,14 @@
  *
  * SPDX-License-Identifier: GPL-3.0-or-later */
 
-// clang-format off
-#include <glad/glad.h>
-// clang-format on
-
 #include "gui/rml_viewport_overlay.hpp"
 #include "core/logger.hpp"
 #include "gui/gui_focus_state.hpp"
 #include "gui/panel_layout.hpp"
 #include "gui/rmlui/rml_document_utils.hpp"
-#include "gui/rmlui/rml_panel_host.hpp"
 #include "gui/rmlui/rml_theme.hpp"
 #include "gui/rmlui/rml_tooltip.hpp"
 #include "gui/rmlui/rmlui_manager.hpp"
-#include "gui/rmlui/rmlui_render_interface.hpp"
 #include "gui/rmlui/sdl_rml_key_mapping.hpp"
 #include "internal/resource_paths.hpp"
 #include "python/python_runtime.hpp"
@@ -28,7 +22,6 @@
 #include <cassert>
 #include <format>
 #include <vector>
-#include <imgui.h>
 
 namespace lfs::vis::gui {
 
@@ -49,6 +42,7 @@ namespace lfs::vis::gui {
                 LOG_ERROR("RmlViewportOverlay: failed to load viewport_overlay.rml");
                 return;
             }
+            cacheBodyTemplate();
             document_->Show();
             applyGTMetricsOverlay();
         } catch (const std::exception& e) {
@@ -65,63 +59,63 @@ namespace lfs::vis::gui {
             lfs::python::unregister_rml_document("viewport_overlay");
         doc_registered_ = false;
 
-        fbo_.destroy();
         if (rml_context_ && rml_manager_)
             rml_manager_->destroyContext("viewport_overlay");
         rml_context_ = nullptr;
         document_ = nullptr;
+        body_template_rml_.clear();
     }
 
-    std::string RmlViewportOverlay::generateThemeRCSS(const lfs::vis::Theme& t) const {
-        using rml_theme::colorToRml;
-        using rml_theme::colorToRmlAlpha;
+    void RmlViewportOverlay::reloadResources() {
+        if (!rml_context_)
+            return;
 
-        const auto toolbar_bg = colorToRml(t.toolbar_background());
-        const auto subtoolbar_bg = colorToRml(t.subtoolbar_background());
-        const auto icon_dim = colorToRmlAlpha(t.palette.text, 0.9f);
-        const auto selected_bg = colorToRml(t.palette.primary);
-        const auto selected_bg_hover = colorToRml(ImVec4(
-            std::min(1.0f, t.palette.primary.x + 0.1f),
-            std::min(1.0f, t.palette.primary.y + 0.1f),
-            std::min(1.0f, t.palette.primary.z + 0.1f),
-            t.palette.primary.w));
-        const auto selected_icon = colorToRml(t.palette.background);
-        const auto hover_bg = colorToRmlAlpha(t.palette.surface_bright, 0.3f);
-        const auto overlay_backdrop = colorToRmlAlpha(t.palette.background, 0.55f);
-        const auto overlay_panel_bg = colorToRmlAlpha(t.palette.surface, 0.97f);
-        const auto overlay_panel_border = colorToRmlAlpha(t.palette.border, 0.45f);
-        const auto overlay_text = colorToRml(t.palette.text);
-        const auto overlay_text_dim = colorToRml(t.palette.text_dim);
-        const auto metrics_bg = colorToRmlAlpha(t.palette.background, 0.92f);
-        const auto metrics_border = colorToRmlAlpha(t.palette.primary, 0.55f);
-        const auto metrics_label = colorToRml(t.palette.text_dim);
-        const auto metrics_value = colorToRml(t.palette.text);
+        if (doc_registered_)
+            lfs::python::unregister_rml_document("viewport_overlay");
+        doc_registered_ = false;
 
-        return std::format(
-            ".toolbar-container {{ background-color: {}; border-radius: {:.0f}dp; }}\n"
-            ".subtoolbar-container {{ background-color: {}; border-radius: {:.0f}dp; }}\n"
-            ".icon-btn img {{ image-color: {}; }}\n"
-            ".icon-btn:hover {{ background-color: {}; }}\n"
-            ".icon-btn.selected {{ background-color: {}; }}\n"
-            ".icon-btn.selected:hover {{ background-color: {}; }}\n"
-            ".icon-btn.selected img {{ image-color: {}; }}\n"
-            ".viewport-metrics-card {{ background-color: {}; border-color: {}; }}\n"
-            ".viewport-metrics-label {{ color: {}; }}\n"
-            ".viewport-metrics-value {{ color: {}; }}\n"
-            ".viewport-status-backdrop {{ background-color: {}; }}\n"
-            ".viewport-status-panel {{ background-color: {}; border-color: {}; border-radius: {:.0f}dp; }}\n"
-            ".viewport-status-title {{ color: {}; }}\n"
-            ".viewport-status-path {{ color: {}; }}\n"
-            ".viewport-status-stage {{ color: {}; }}\n",
-            toolbar_bg, t.sizes.window_rounding,
-            subtoolbar_bg, t.sizes.window_rounding,
-            icon_dim,
-            hover_bg,
-            selected_bg, selected_bg_hover, selected_icon,
-            metrics_bg, metrics_border, metrics_label, metrics_value,
-            overlay_backdrop,
-            overlay_panel_bg, overlay_panel_border, t.sizes.window_rounding,
-            overlay_text, overlay_text_dim, overlay_text_dim);
+        if (document_) {
+            rml_context_->UnloadDocument(document_);
+            rml_context_->Update();
+        }
+
+        document_ = nullptr;
+        base_rcss_.clear();
+        has_theme_signature_ = false;
+        wants_input_ = false;
+        render_needed_ = true;
+        animation_active_ = true;
+        mouse_pos_valid_ = false;
+        last_render_w_ = 0;
+        last_render_h_ = 0;
+        last_document_hook_run_ = {};
+
+        try {
+            const auto rml_path = lfs::vis::getAssetPath("rmlui/viewport_overlay.rml");
+            document_ = rml_documents::loadDocument(rml_context_, rml_path);
+            if (!document_) {
+                LOG_ERROR("RmlViewportOverlay: failed to reload viewport_overlay.rml");
+                return;
+            }
+            cacheBodyTemplate();
+            document_->Show();
+            applyGTMetricsOverlay();
+            updateToolbarRoots();
+        } catch (const std::exception& e) {
+            LOG_ERROR("RmlViewportOverlay: resource not found during reload: {}", e.what());
+            return;
+        }
+
+        updateTheme();
+    }
+
+    void RmlViewportOverlay::cacheBodyTemplate() {
+        body_template_rml_.clear();
+        if (!document_)
+            return;
+
+        if (auto* const body = document_->GetElementById("overlay-body"))
+            body_template_rml_ = body->GetInnerRML();
     }
 
     bool RmlViewportOverlay::updateTheme() {
@@ -137,7 +131,7 @@ namespace lfs::vis::gui {
         if (base_rcss_.empty())
             base_rcss_ = rml_theme::loadBaseRCSS("rmlui/viewport_overlay.rcss");
 
-        rml_theme::applyTheme(document_, base_rcss_, rml_theme::generateAllThemeMedia([this](const auto& th) { return generateThemeRCSS(th); }));
+        rml_theme::applyTheme(document_, base_rcss_, rml_theme::loadBaseRCSS("rmlui/viewport_overlay.theme.rcss"));
         return true;
     }
 
@@ -311,7 +305,7 @@ namespace lfs::vis::gui {
                 rml_context_->ProcessMouseWheel(Rml::Vector2f(0.0f, -input.mouse_wheel), mods);
             }
 
-            RmlPanelHost::setFrameTooltip(resolveRmlTooltip(hover), hover);
+            tooltip_.setHover(resolveRmlTooltip(hover), hover);
         }
     }
 
@@ -346,14 +340,14 @@ namespace lfs::vis::gui {
                 return;
 
             // Wrapper exists but binding is stale (data model was rebuilt).
-            // Tear it down so we can recreate with a fresh binding.
-            std::vector<Rml::Element*> children;
-            children.reserve(existing->GetNumChildren());
-            for (int i = 0; i < existing->GetNumChildren(); ++i)
-                children.push_back(existing->GetChild(i));
-            for (auto* child : children)
-                body->AppendChild(existing->RemoveChild(child));
-            body->RemoveChild(existing);
+            // Restore the original unbound body markup instead of recycling
+            // the live subtree, which may already contain expanded data-for views.
+            if (!body_template_rml_.empty()) {
+                body->SetInnerRML(Rml::String(body_template_rml_));
+            } else {
+                LOG_WARN("RmlViewportOverlay: missing body template for stale data-model rebind");
+                body->RemoveChild(existing);
+            }
         }
 
         // RmlUI does not rebind data-model when the attribute is set after
@@ -376,6 +370,17 @@ namespace lfs::vis::gui {
         }
         for (auto* child : children_to_move)
             wrapper->AppendChild(body->RemoveChild(child));
+
+        applyGTMetricsOverlay();
+    }
+
+    bool RmlViewportOverlay::applyFrameTooltip() {
+        if (!document_)
+            return false;
+        return tooltip_.apply(document_->GetElementById("overlay-body"),
+                              last_mouse_x_, last_mouse_y_,
+                              static_cast<int>(vp_size_.x),
+                              static_cast<int>(vp_size_.y));
     }
 
     void RmlViewportOverlay::render() {
@@ -389,7 +394,7 @@ namespace lfs::vis::gui {
             doc_registered_ = true;
         }
 
-        if (rml_manager_->shouldDeferFboUpdate(fbo_))
+        if (!rml_manager_ || !rml_manager_->getVulkanRenderInterface())
             return;
 
         const bool theme_changed = updateTheme();
@@ -407,52 +412,42 @@ namespace lfs::vis::gui {
         auto* body = document_->GetElementById("overlay-body");
         ensureBodyDataModelBound(body);
         updateToolbarRoots();
+        const bool tooltip_changed = applyFrameTooltip();
 
         const bool needs_render = render_needed_ || animation_active_ || run_document_hooks ||
-                                  theme_changed || size_changed;
-        if (!needs_render)
+                                  theme_changed || size_changed || tooltip_changed;
+        if (!needs_render) {
+            rml_manager_->queueVulkanContext(rml_context_,
+                                             vp_pos_.x - screen_origin_.x,
+                                             vp_pos_.y - screen_origin_.y,
+                                             true,
+                                             true,
+                                             vp_pos_.x - screen_origin_.x,
+                                             vp_pos_.y - screen_origin_.y,
+                                             vp_pos_.x - screen_origin_.x + vp_size_.x,
+                                             vp_pos_.y - screen_origin_.y + vp_size_.y);
             return;
-
-        if (rml_manager_) {
-            rml_manager_->trackContextFrame(rml_context_,
-                                            static_cast<int>(vp_pos_.x - screen_origin_.x),
-                                            static_cast<int>(vp_pos_.y - screen_origin_.y));
         }
+
+        rml_manager_->trackContextFrame(rml_context_,
+                                        static_cast<int>(vp_pos_.x - screen_origin_.x),
+                                        static_cast<int>(vp_pos_.y - screen_origin_.y));
         rml_context_->SetDimensions(Rml::Vector2i(w, h));
         rml_context_->Update();
 
-        fbo_.ensure(w, h);
-        if (!fbo_.valid())
-            return;
-
-        auto* render = rml_manager_->getRenderInterface();
-        assert(render);
-        render->SetViewport(w, h);
-
-        GLint prev_fbo = 0;
-        fbo_.bind(&prev_fbo);
-        render->SetTargetFramebuffer(fbo_.fbo());
-
-        render->BeginFrame();
-        rml_context_->Render();
-        render->EndFrame();
-
-        render->SetTargetFramebuffer(0);
-        fbo_.unbind(prev_fbo);
-
+        rml_manager_->queueVulkanContext(rml_context_,
+                                         vp_pos_.x - screen_origin_.x,
+                                         vp_pos_.y - screen_origin_.y,
+                                         true,
+                                         true,
+                                         vp_pos_.x - screen_origin_.x,
+                                         vp_pos_.y - screen_origin_.y,
+                                         vp_pos_.x - screen_origin_.x + vp_size_.x,
+                                         vp_pos_.y - screen_origin_.y + vp_size_.y);
         animation_active_ = (rml_context_->GetNextUpdateDelay() == 0);
         render_needed_ = false;
         last_render_w_ = w;
         last_render_h_ = h;
-    }
-
-    void RmlViewportOverlay::compositeToScreen(const int screen_w, const int screen_h) const {
-        if (!fbo_.valid() || screen_w <= 0 || screen_h <= 0)
-            return;
-        fbo_.blitToScreen(vp_pos_.x - screen_origin_.x,
-                          vp_pos_.y - screen_origin_.y,
-                          vp_size_.x, vp_size_.y,
-                          screen_w, screen_h);
     }
 
 } // namespace lfs::vis::gui

@@ -374,7 +374,7 @@ class SceneNode:
     def has_mask(self) -> bool:
         """Whether this camera node has a mask file"""
 
-    def load_mask(self, resize_factor: int = 1, max_width: int = 3840, invert: bool = False, threshold: float = 0.5) -> lichtfeld.Tensor | None:
+    def load_mask(self, resize_factor: int = 1, max_width: int = 0, invert: bool = False, threshold: float = 0.5) -> lichtfeld.Tensor | None:
         """
         Load mask as tensor [1, H, W] on CUDA (None if not a camera node or no mask)
         """
@@ -582,6 +582,15 @@ class Scene:
     def set_selection_mask(self, mask: lichtfeld.Tensor) -> None:
         """Set selection from boolean mask tensor [N]"""
 
+    def preview_selection_mask(self, mask: lichtfeld.Tensor) -> None:
+        """Preview a selection mask without pushing an undo step"""
+
+    def commit_selection_preview(self) -> None:
+        """Commit a transient selection update as one undo step"""
+
+    def cancel_selection_preview(self) -> None:
+        """Cancel a transient selection update and restore the original selection"""
+
     def clear_selection(self) -> None:
         """Clear all selected Gaussians"""
 
@@ -774,10 +783,12 @@ class Camera:
     def cam_position(self) -> lichtfeld.Tensor:
         """Deprecated raw dataset-world camera position [3]"""
 
-    def load_image(self, resize_factor: int = 1, max_width: int = 3840) -> lichtfeld.Tensor:
-        """Load image as tensor [C, H, W] on CUDA"""
+    def load_image(self, resize_factor: int = 1, max_width: int = 0, output_uint8: bool = False) -> lichtfeld.Tensor:
+        """
+        Load image as tensor [C, H, W] on CUDA. Set output_uint8=True to return uint8 [0,255] instead of float32 [0,1].
+        """
 
-    def load_mask(self, resize_factor: int = 1, max_width: int = 3840, invert: bool = False, threshold: float = 0.5) -> lichtfeld.Tensor:
+    def load_mask(self, resize_factor: int = 1, max_width: int = 0, invert: bool = False, threshold: float = 0.5) -> lichtfeld.Tensor:
         """Load mask as tensor [1, H, W] on CUDA"""
 
 class CameraDataset:

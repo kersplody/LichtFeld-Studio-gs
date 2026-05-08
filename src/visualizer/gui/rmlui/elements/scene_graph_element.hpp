@@ -79,6 +79,7 @@ namespace lfs::vis::gui {
             bool collapsed = false;
             bool draggable = false;
             bool training_enabled = true;
+            std::string name;
             std::string label;
             std::string node_id_text;
             std::string encoded_label;
@@ -113,6 +114,7 @@ namespace lfs::vis::gui {
         void captureSceneSnapshot(const core::Scene& scene,
                                   std::unordered_map<core::NodeId, NodeSnapshot>& snapshots,
                                   std::vector<core::NodeId>& root_ids);
+        bool syncTrainingTopologyLabel(const core::Scene& scene, bool update_cached_rows);
         void appendSnapshotRows(core::NodeId node_id, int depth, std::vector<FlatRow>& rows,
                                 const std::string& filter_text_lower) const;
         void appendVisibleSubtreeRows(core::NodeId node_id, int depth,
@@ -144,6 +146,8 @@ namespace lfs::vis::gui {
         void toggleModelsSection();
         bool setDropTarget(core::NodeId node_id);
         void showContextMenu(core::NodeId node_id, float mouse_x, float mouse_y);
+        void showModelsHeaderContextMenu(float mouse_x, float mouse_y);
+        bool isModelsHeaderTarget(Rml::Element* target) const;
         std::vector<std::string> deletableSelectedNodeNames() const;
         void deleteSelectedNodes();
         void toggleChildrenTraining(core::NodeId group_id, bool enabled);
@@ -165,6 +169,7 @@ namespace lfs::vis::gui {
         core::NodeId pending_reveal_node_id_ = core::NULL_NODE;
 
         std::string filter_text_;
+        std::string last_training_model_node_name_;
         core::NodeId click_anchor_id_ = core::NULL_NODE;
         core::NodeId rename_node_id_ = core::NULL_NODE;
         std::string rename_buffer_;
@@ -183,8 +188,10 @@ namespace lfs::vis::gui {
         uint64_t state_revision_ = 1;
         uint64_t last_bound_revision_ = 0;
         uint32_t last_selection_generation_ = std::numeric_limits<uint32_t>::max();
+        size_t last_training_model_gaussian_count_ = std::numeric_limits<size_t>::max();
         size_t last_visible_start_ = kUnsetVisibleRange;
         size_t last_visible_end_ = kUnsetVisibleRange;
+        float last_bound_dp_ratio_ = -1.0f;
         float last_client_height_ = -1.0f;
         float last_content_height_ = -1.0f;
         std::string last_header_text_;

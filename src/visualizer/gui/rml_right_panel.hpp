@@ -4,7 +4,6 @@
 
 #pragma once
 
-#include "gui/rmlui/rml_fbo.hpp"
 #include <RmlUi/Core/DataModelHandle.h>
 #include <cstddef>
 #include <cstdint>
@@ -49,6 +48,7 @@ namespace lfs::vis::gui {
         void shutdown();
 
         void processInput(const RightPanelLayout& layout, const PanelInputState& input);
+        void reloadResources();
         void render(const RightPanelLayout& layout,
                     const std::vector<TabSnapshot>& tabs,
                     const std::string& active_tab,
@@ -69,7 +69,6 @@ namespace lfs::vis::gui {
 
     private:
         bool updateTheme();
-        std::string generateThemeRCSS(const lfs::vis::Theme& t) const;
         bool syncTabData(const std::vector<TabSnapshot>& tabs, const std::string& active_tab);
         bool syncTabScrollState();
         void syncTabNavigation();
@@ -86,7 +85,6 @@ namespace lfs::vis::gui {
         Rml::Element* tab_strip_viewport_el_ = nullptr;
         Rml::Element* tab_separator_el_ = nullptr;
 
-        RmlFBO fbo_;
         Rml::DataModelHandle tab_model_;
         std::vector<TabSnapshot> tabs_;
         Rml::String active_tab_;

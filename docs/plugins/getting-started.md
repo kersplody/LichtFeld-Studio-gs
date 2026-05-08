@@ -265,7 +265,7 @@ from pathlib import Path
 template = str(Path(__file__).resolve().with_name("main_panel.rml"))
 ```
 
-When a template file exists at `main_panel.rml`, LichtFeld automatically looks for a sibling `main_panel.rcss` file and loads it as the base stylesheet for that document.
+When a template file exists at `main_panel.rml`, LichtFeld automatically looks for a sibling `main_panel.rcss` file and loads it as the base stylesheet for that document. A sibling `main_panel.theme.rcss` file is also loaded for palette-dependent overrides.
 
 ### Which styling path should you use?
 
@@ -764,6 +764,52 @@ paint_tool = ToolDef(
 
 ToolRegistry.register_tool(paint_tool)
 ```
+
+### Native TRS gizmos
+
+Use the built-in viewport transform handles directly from Python when a tool needs a reusable translate,
+rotate, or scale handle that is not tied to the active toolbar selection.
+
+```python
+import lichtfeld as lf
+
+box_matrix = lf.compose_transform([0, 0, 0], [0, 0, 0], [1, 1, 1])
+
+gizmo = lf.TransformGizmo("translate", box_matrix, id="my_plugin.box_move")
+gizmo.space = "local"          # or "world"
+gizmo.snap = True
+gizmo.translate_snap = 0.1
+
+
+def read_box_transform():
+    return box_matrix
+
+
+def write_box_transform(matrix):
+    global box_matrix
+    box_matrix = list(matrix)
+
+
+gizmo.attach_to_callbacks(read_box_transform, write_box_transform)
+```
+
+Convenience constructors are available for each operation:
+
+```python
+move = lf.TranslationGizmo(id="move_anchor")
+rotate = lf.RotationGizmo(id="rotate_anchor")
+scale = lf.ScaleGizmo(id="scale_anchor")
+```
+
+For scene nodes, attach directly:
+
+```python
+gizmo = lf.TransformGizmo("rotate", id="my_plugin.node_rotate")
+gizmo.attach_to_node("Model")  # visualizer-world transform by default
+```
+
+Keep the returned gizmo object if you want to change settings later. Attached gizmos stay registered
+until `gizmo.detach()` or `lf.clear_transform_gizmos()` is called.
 
 ---
 

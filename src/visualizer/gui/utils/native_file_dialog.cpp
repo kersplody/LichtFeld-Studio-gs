@@ -7,6 +7,7 @@
 #include "core/logger.hpp"
 #include "core/path_utils.hpp"
 
+#include <SDL3/SDL_keyboard.h>
 #include <SDL3/SDL_video.h>
 #include <nfd.h>
 
@@ -274,6 +275,17 @@ namespace lfs::vis::gui {
         }
 #endif
 
+        [[nodiscard]] bool isPortalAbruptDismissal(const char* error) {
+            if (error == nullptr) {
+                return false;
+            }
+
+            const std::string_view message(error);
+            return message.find("D-Bus file dialog interaction was ended abruptly") !=
+                       std::string_view::npos &&
+                   message.find("response code 2") != std::string_view::npos;
+        }
+
         class FilterListStorage {
         public:
             explicit FilterListStorage(const std::vector<DialogFilter>& filters) {
@@ -329,7 +341,7 @@ namespace lfs::vis::gui {
 
         [[nodiscard]] nfdwindowhandle_t currentParentWindowHandle() {
             nfdwindowhandle_t handle{};
-            SDL_Window* const window = SDL_GL_GetCurrentWindow();
+            SDL_Window* const window = SDL_GetKeyboardFocus();
             if (!window) {
                 return handle;
             }
@@ -383,6 +395,7 @@ namespace lfs::vis::gui {
             const nfdwindowhandle_t parentWindow = currentParentWindowHandle();
             nfdresult_t dialogResult = NFD_ERROR;
             nfdu8char_t* selectedPath = nullptr;
+            NFD_ClearError();
 
             if (request.kind == DialogKind::OpenFile) {
                 const nfdopendialogu8args_t args{
@@ -414,14 +427,22 @@ namespace lfs::vis::gui {
             }
 
             if (dialogResult == NFD_CANCEL) {
+                NFD_ClearError();
                 return false;
             }
 
             if (dialogResult != NFD_OKAY) {
                 const char* error = NFD_GetError();
+                if (isPortalAbruptDismissal(error)) {
+                    LOG_DEBUG("Native file dialog dismissed by portal: {}", error);
+                    NFD_ClearError();
+                    return false;
+                }
+
                 if (isMissingLinuxPortalError(error)) {
 #if defined(__linux__)
                     LOG_WARN("Native file dialog portal unavailable; falling back to zenity.");
+                    NFD_ClearError();
                     return runZenityDialog(request, resultPath);
 #else
                     LOG_WARN("Native file dialog unavailable: xdg-desktop-portal is not running or not installed.");
@@ -430,6 +451,7 @@ namespace lfs::vis::gui {
                     LOG_ERROR("Native file dialog failed: {}",
                               error ? error : "unknown error");
                 }
+                NFD_ClearError();
                 return false;
             }
 
@@ -467,6 +489,22 @@ namespace lfs::vis::gui {
 
         [[nodiscard]] std::vector<DialogFilter> jsonFilters() {
             return {makeFilter("JSON Files", {".json"})};
+        }
+
+        [[nodiscard]] std::vector<DialogFilter> csvFilters() {
+            return {makeFilter("CSV Files", {".csv"})};
+        }
+
+        [[nodiscard]] std::vector<DialogFilter> lasFilters() {
+            return {makeFilter("LAS Point Cloud Files", {".las"})};
+        }
+
+        [[nodiscard]] std::vector<DialogFilter> lazFilters() {
+            return {makeFilter("LAZ Compressed Point Cloud Files", {".laz"})};
+        }
+
+        [[nodiscard]] std::vector<DialogFilter> lasLazFilters() {
+            return {makeFilter("LAS/LAZ Point Cloud Files", {".las", ".laz"})};
         }
 
         [[nodiscard]] std::vector<DialogFilter> videoFilters() {
@@ -534,6 +572,32 @@ namespace lfs::vis::gui {
     std::filesystem::path OpenJsonFileDialog(const std::filesystem::path& defaultPath) {
         std::filesystem::path result;
         runDialog(makeOpenFileRequest(jsonFilters(), defaultPath), result);
+        return result;
+    }
+
+    std::filesystem::path OpenCsvFileDialog(const std::filesystem::path& defaultPath) {
+        std::filesystem::path result;
+        runDialog(makeOpenFileRequest(csvFilters(), defaultPath), result);
+        return result;
+    }
+
+    std::filesystem::path OpenLasFileDialog(const std::filesystem::path& defaultPath) {
+        std::filesystem::path result;
+        runDialog(makeOpenFileRequest(lasLazFilters(), defaultPath), result);
+        return result;
+    }
+
+    std::filesystem::path SaveLasFileDialog(const std::string& defaultName,
+                                            const std::filesystem::path& defaultPath) {
+        std::filesystem::path result;
+        runDialog(makeSaveFileRequest(lasFilters(), defaultPath, defaultName, ".las"), result);
+        return result;
+    }
+
+    std::filesystem::path SaveLazFileDialog(const std::string& defaultName,
+                                            const std::filesystem::path& defaultPath) {
+        std::filesystem::path result;
+        runDialog(makeSaveFileRequest(lazFilters(), defaultPath, defaultName, ".laz"), result);
         return result;
     }
 
@@ -629,6 +693,17 @@ namespace lfs::vis::gui {
                                       defaultPath,
                                       defaultName,
                                       ".html"),
+                  result);
+        return result;
+    }
+
+    std::filesystem::path SaveRadFileDialog(const std::string& defaultName,
+                                            const std::filesystem::path& defaultPath) {
+        std::filesystem::path result;
+        runDialog(makeSaveFileRequest(singleExtensionFilter("RAD Files", ".rad"),
+                                      defaultPath,
+                                      defaultName,
+                                      ".rad"),
                   result);
         return result;
     }

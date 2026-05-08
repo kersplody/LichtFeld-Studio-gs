@@ -134,7 +134,6 @@ namespace lfs::core {
             bool headless = false;                             // Disable visualization during training
             bool auto_train = false;                           // Start training immediately on startup
             bool no_splash = false;                            // Skip splash screen on startup
-            bool no_interop = false;                           // Disable CUDA-GL interop (use CPU fallback)
             bool debug_python = false;                         // Start debugpy listener for plugin debugging
             int debug_python_port = 5678;                      // Port for debugpy listener
             std::string strategy = std::string(kStrategyMRNF); // Optimization strategy: mcmc, mrnf, igs+.
@@ -204,7 +203,7 @@ namespace lfs::core {
             int init_num_pts = 100'000; // Number of random points to initialize
             float init_extent = 3.0f;   // Extent of random point cloud
 
-            // Tile mode for memory-efficient training (1=1 tile, 2=2 tiles, 4=4 tiles)
+            // Tile mode for memory-efficient 3DGUT training (ignored for 3DGS/FastGS)
             int tile_mode = 1;
 
             // Sparsity optimization parameters
@@ -260,6 +259,9 @@ namespace lfs::core {
             bool invert_masks = false;
             float mask_threshold = 0.5f;
 
+            // Not serialized — UI-controlled per import.
+            std::string centralize_dataset = "off";
+
             nlohmann::json to_json() const;
             static DatasetConfig from_json(const nlohmann::json& j);
         };
@@ -293,7 +295,8 @@ namespace lfs::core {
                                   HTML,
                                   USD,
                                   USDA,
-                                  USDC };
+                                  USDC,
+                                  RAD };
 
         // Parameters for the convert command
         struct LFS_CORE_API ConvertParameters {
@@ -302,7 +305,8 @@ namespace lfs::core {
             OutputFormat format = OutputFormat::PLY;
             int sh_degree = 3; // 0-3, -1 = keep original
             int sog_iterations = 10;
-            bool overwrite = false; // Skip overwrite prompts
+            bool overwrite = false;            // Skip overwrite prompts
+            std::vector<float> rad_lod_levels; // LOD levels for RAD format (as ratios, e.g., 0.5f = 50%)
         };
 
         // Modern C++23 functions returning expected values

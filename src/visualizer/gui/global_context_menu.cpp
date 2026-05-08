@@ -2,10 +2,6 @@
  *
  * SPDX-License-Identifier: GPL-3.0-or-later */
 
-// clang-format off
-#include <glad/glad.h>
-// clang-format on
-
 #include "gui/global_context_menu.hpp"
 #include "core/logger.hpp"
 #include "gui/gui_focus_state.hpp"
@@ -13,7 +9,6 @@
 #include "gui/rmlui/rml_document_utils.hpp"
 #include "gui/rmlui/rml_theme.hpp"
 #include "gui/rmlui/rmlui_manager.hpp"
-#include "gui/rmlui/rmlui_render_interface.hpp"
 #include "internal/resource_paths.hpp"
 #include "theme/theme.hpp"
 
@@ -38,7 +33,6 @@ namespace lfs::vis::gui {
         menu_model_ = {};
         items_.clear();
         pending_items_.clear();
-        fbo_.destroy();
         if (ctx_ && mgr_)
             mgr_->destroyContext("global_context_menu");
     }
@@ -92,25 +86,55 @@ namespace lfs::vis::gui {
         }
     }
 
-    std::string GlobalContextMenu::generateThemeRCSS(const lfs::vis::Theme& t) const {
-        using rml_theme::colorToRml;
-        using rml_theme::colorToRmlAlpha;
-        const auto& p = t.palette;
+    void GlobalContextMenu::reloadResources() {
+        if (!ctx_)
+            return;
 
-        const auto surface = colorToRmlAlpha(p.surface, 0.95f);
-        const auto border = colorToRmlAlpha(p.border, 0.4f);
-        const auto text = colorToRml(p.text);
-        const auto text_dim = colorToRml(p.text_dim);
-        const int rounding = static_cast<int>(t.sizes.window_rounding);
+        hide();
+        open_ = false;
+        pending_open_ = false;
+        focus_first_item_ = false;
+        callback_ = {};
 
-        return std::format(
-            ".context-menu {{ background-color: {}; border-color: {}; border-radius: {}dp; }}\n"
-            ".context-menu-item {{ color: {}; }}\n"
-            ".context-menu-label {{ color: {}; }}\n"
-            ".context-menu-separator {{ background-color: {}; }}\n",
-            surface, border, rounding,
-            text, text_dim,
-            colorToRmlAlpha(p.border, 0.5f));
+        if (doc_) {
+            ctx_->UnloadDocument(doc_);
+            ctx_->Update();
+        }
+
+        doc_ = nullptr;
+        el_backdrop_ = nullptr;
+        el_ctx_menu_ = nullptr;
+        base_rcss_.clear();
+        has_theme_signature_ = false;
+        width_ = 0;
+        height_ = 0;
+
+        try {
+            const auto rml_path = lfs::vis::getAssetPath("rmlui/global_context_menu.rml");
+            doc_ = rml_documents::loadDocument(ctx_, rml_path);
+            if (!doc_) {
+                LOG_ERROR("GlobalContextMenu: failed to reload global_context_menu.rml");
+                return;
+            }
+            doc_->Show();
+
+            el_backdrop_ = doc_->GetElementById("backdrop");
+            el_ctx_menu_ = doc_->GetElementById("ctx-menu");
+
+            if (!el_backdrop_ || !el_ctx_menu_) {
+                LOG_ERROR("GlobalContextMenu: missing DOM elements after reload");
+                return;
+            }
+
+            el_backdrop_->AddEventListener(Rml::EventId::Click, &listener_);
+            el_ctx_menu_->AddEventListener(Rml::EventId::Click, &listener_);
+        } catch (const std::exception& e) {
+            LOG_ERROR("GlobalContextMenu: resource not found during reload: {}", e.what());
+            return;
+        }
+
+        menu_model_.DirtyVariable("items");
+        syncTheme();
     }
 
     void GlobalContextMenu::syncTheme() {
@@ -126,7 +150,7 @@ namespace lfs::vis::gui {
         if (base_rcss_.empty())
             base_rcss_ = rml_theme::loadBaseRCSS("rmlui/global_context_menu.rcss");
 
-        rml_theme::applyTheme(doc_, base_rcss_, rml_theme::generateAllThemeMedia([this](const auto& th) { return generateThemeRCSS(th); }));
+        rml_theme::applyTheme(doc_, base_rcss_, rml_theme::loadBaseRCSS("rmlui/global_context_menu.theme.rcss"));
     }
 
     void GlobalContextMenu::request(std::vector<ContextMenuItem> items, float screen_x, float screen_y,
@@ -253,47 +277,26 @@ namespace lfs::vis::gui {
         if (w <= 0 || h <= 0)
             return;
 
-        if (!mgr_->shouldDeferFboUpdate(fbo_)) {
-            if (w != width_ || h != height_) {
-                width_ = w;
-                height_ = h;
-                ctx_->SetDimensions(Rml::Vector2i(w, h));
-            }
+        if (!mgr_ || !mgr_->getVulkanRenderInterface())
+            return;
 
-            ctx_->Update();
-            if (focus_first_item_) {
-                focusFirstItem();
-                focus_first_item_ = false;
-                ctx_->Update();
-            }
-
-            fbo_.ensure(w, h);
-            if (!fbo_.valid())
-                return;
-
-            auto* render_iface = mgr_->getRenderInterface();
-            assert(render_iface);
-            render_iface->SetViewport(w, h);
-
-            GLint prev_fbo = 0;
-            fbo_.bind(&prev_fbo);
-            render_iface->SetTargetFramebuffer(fbo_.fbo());
-
-            render_iface->BeginFrame();
-            ctx_->Render();
-            render_iface->EndFrame();
-
-            render_iface->SetTargetFramebuffer(0);
-            fbo_.unbind(prev_fbo);
+        if (w != width_ || h != height_) {
+            width_ = w;
+            height_ = h;
+            ctx_->SetDimensions(Rml::Vector2i(w, h));
         }
 
-        if (fbo_.valid())
-            fbo_.blitToScreen(0.0f, 0.0f, static_cast<float>(screen_w), static_cast<float>(screen_h),
-                              screen_w, screen_h);
+        ctx_->Update();
+        if (focus_first_item_) {
+            focusFirstItem();
+            focus_first_item_ = false;
+            ctx_->Update();
+        }
+
+        mgr_->queueVulkanContext(ctx_, 0.0f, 0.0f, true);
     }
 
-    void GlobalContextMenu::destroyGLResources() {
-        fbo_.destroy();
+    void GlobalContextMenu::releaseRendererResources() {
     }
 
     void GlobalContextMenu::EventListener::ProcessEvent(Rml::Event& event) {

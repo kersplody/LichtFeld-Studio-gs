@@ -5,6 +5,7 @@
 import os
 import re
 import time
+from typing import Any, Optional
 
 import lichtfeld as lf
 
@@ -12,6 +13,21 @@ from . import rml_widgets as w
 from .scrub_fields import ScrubFieldController, ScrubFieldSpec
 from .types import Panel
 from .ui.state import AppState
+
+# Asset Manager integration (optional)
+try:
+    from .asset_index import AssetIndex
+    from .asset_manager_integration import (
+        derive_project_scene_names,
+        ensure_dataset_catalog_context,
+    )
+
+    ASSET_MANAGER_AVAILABLE = True
+except ImportError:
+    ASSET_MANAGER_AVAILABLE = False
+
+__lfs_panel_classes__ = ["TrainingPanel"]
+__lfs_panel_ids__ = ["lfs.training"]
 
 
 def tr(key):
@@ -407,6 +423,10 @@ class TrainingPanel(Panel):
             self._get_scrub_value,
             self._set_scrub_value,
         )
+        # Asset Manager integration
+        self._asset_index: Optional[Any] = None
+        if ASSET_MANAGER_AVAILABLE:
+            self._initialize_asset_manager()
 
     def on_bind_model(self, ctx):
         model = ctx.create_data_model("training")
@@ -580,6 +600,9 @@ class TrainingPanel(Panel):
         )
         model.bind_func(
             "dep_eval", lambda: p() is not None and p().has_params() and p().enable_eval
+        )
+        model.bind_func(
+            "dep_gut", lambda: p() is not None and p().has_params() and p().gut
         )
         model.bind_func(
             "show_progress",
@@ -1358,7 +1381,11 @@ class TrainingPanel(Panel):
             params.ppisp = True
         elif prop == "ppisp" and not val:
             params.ppisp_freeze_from_sidecar = False
-        if prop == "enable_eval" and val and not self._clamp_current_test_every_for_eval():
+        if (
+            prop == "enable_eval"
+            and val
+            and not self._clamp_current_test_every_for_eval()
+        ):
             return
         setattr(params, prop, val)
         if prop == "enable_eval" and val:
@@ -1492,7 +1519,7 @@ class TrainingPanel(Panel):
             return False
         try:
             val = int(_parse_num(str(val_str), int))
-            if 0 < val <= 4096:
+            if val >= 0:
                 d.max_width = val
                 return True
         except (ValueError, TypeError, RuntimeError):
@@ -1668,7 +1695,7 @@ class TrainingPanel(Panel):
             d = lf.dataset_params()
             if not d or not d.has_params():
                 return
-            new_val = max(1, min(4096, d.max_width + 16 * direction))
+            new_val = max(0, d.max_width + 16 * direction)
             d.max_width = new_val
             self._text_bufs["max_width_str"] = f"{new_val:,}"
             if self._handle:
@@ -1904,6 +1931,38 @@ class TrainingPanel(Panel):
                     lf.log.info(f"Saved point cloud ({pc.size} points) to {save_path}")
                     scene.is_point_cloud_modified = False
                     return
+
+    # ── Asset Manager Integration ───────────────────────────
+
+    def _initialize_asset_manager(self):
+        """Initialize AssetIndex connection if available."""
+        if not ASSET_MANAGER_AVAILABLE:
+            return
+        try:
+            from pathlib import Path
+
+            storage_path = Path.home() / ".lichtfeld" / "asset_manager"
+            storage_path.mkdir(parents=True, exist_ok=True)
+            self._asset_index = AssetIndex(library_path=storage_path / "library.json")
+            self._asset_index.load()
+        except Exception as e:
+            lf.log.warn(f"Failed to initialize Asset Manager in training panel: {e}")
+            self._asset_index = None
+
+    def _get_or_create_project_scene(self):
+        """Infer project/scene names from dataset path or current context.
+
+        Returns:
+            Tuple of (project_name, scene_name, dataset_path) or (None, None, None)
+        """
+        d = lf.dataset_params()
+        if not d or not d.has_params() or not d.data_path:
+            return None, None, None
+
+        dataset_path = d.data_path
+        project_name, scene_name = derive_project_scene_names(dataset_path)
+
+        return project_name, scene_name, dataset_path
 
     def _on_remove_step_event(self, handle, event, args):
         if not args:
@@ -2148,23 +2207,26 @@ class TrainingPanel(Panel):
             if layout.is_item_hovered():
                 layout.set_tooltip(tr("training.tooltip.sh_degree"))
 
-            layout.table_next_row()
-            layout.table_next_column()
-            layout.label(tr("training_params.tile_mode"))
-            layout.table_next_column()
-            layout.push_item_width(-1)
-            tile_idx = {1: 0, 2: 1, 4: 2}.get(params.tile_mode, 0)
-            tile_mode_items = [
-                tr("training.options.tile.full"),
-                tr("training.options.tile.half"),
-                tr("training.options.tile.quarter"),
-            ]
-            changed, new_idx = layout.combo("##py_tile_mode", tile_idx, tile_mode_items)
-            if changed:
-                params.tile_mode = [1, 2, 4][new_idx]
-            layout.pop_item_width()
-            if layout.is_item_hovered():
-                layout.set_tooltip(tr("training.tooltip.tile_mode"))
+            if params.gut:
+                layout.table_next_row()
+                layout.table_next_column()
+                layout.label(tr("training_params.tile_mode"))
+                layout.table_next_column()
+                layout.push_item_width(-1)
+                tile_idx = {1: 0, 2: 1, 4: 2}.get(params.tile_mode, 0)
+                tile_mode_items = [
+                    tr("training.options.tile.full"),
+                    tr("training.options.tile.half"),
+                    tr("training.options.tile.quarter"),
+                ]
+                changed, new_idx = layout.combo(
+                    "##py_tile_mode", tile_idx, tile_mode_items
+                )
+                if changed:
+                    params.tile_mode = [1, 2, 4][new_idx]
+                layout.pop_item_width()
+                if layout.is_item_hovered():
+                    layout.set_tooltip(tr("training.tooltip.tile_mode"))
 
             layout.table_next_row()
             layout.table_next_column()
@@ -2507,7 +2569,7 @@ class TrainingPanel(Panel):
                             changed, new_val = layout.input_int(
                                 "##py_max_width", dataset.max_width, 80, 400
                             )
-                            if changed and 0 < new_val <= 4096:
+                            if changed and new_val >= 0:
                                 dataset.max_width = new_val
                             layout.pop_item_width()
                         else:

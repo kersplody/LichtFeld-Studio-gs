@@ -4,11 +4,11 @@
 
 #pragma once
 
-#include "gui/rmlui/rml_fbo.hpp"
 #include "gui/sequencer_viewport_edit_mode.hpp"
 #include "sequencer/rml_sequencer_panel.hpp"
 #include <RmlUi/Core/EventListener.h>
 #include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <vector>
@@ -76,13 +76,14 @@ namespace lfs::vis::gui {
         void hideEditOverlay();
         void showPreviewWindow(float left, float top, float width, float height,
                                const std::string& title, bool playing,
-                               unsigned int texture_id);
+                               const std::string& texture_src);
         void hidePreviewWindow();
 
         void processInput(const lfs::vis::PanelInputState& input);
         void render(int screen_w, int screen_h);
         void compositeToScreen(int screen_w, int screen_h) const;
-        void destroyGLResources();
+        void destroyGraphicsResources();
+        void reloadResources();
 
         [[nodiscard]] bool isContextMenuOpen() const { return context_menu_open_; }
         [[nodiscard]] bool isPopupOpen() const { return time_edit_active_ || focal_edit_active_; }
@@ -103,7 +104,6 @@ namespace lfs::vis::gui {
         [[nodiscard]] bool ensureContextReady();
         void syncTheme();
         void syncLocalization();
-        std::string generateThemeRCSS(const lfs::vis::Theme& t) const;
         void cacheElements();
         std::string buildContextMenuHTML(std::optional<size_t> keyframe,
                                          SequencerViewportEditMode edit_mode) const;
@@ -121,7 +121,6 @@ namespace lfs::vis::gui {
 
         Rml::Context* rml_context_ = nullptr;
         Rml::ElementDocument* document_ = nullptr;
-        RmlFBO fbo_;
 
         Rml::Element* el_menu_backdrop_ = nullptr;
         Rml::Element* el_context_menu_ = nullptr;
